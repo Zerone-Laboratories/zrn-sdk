@@ -213,7 +213,8 @@ def build_project(proj, arch=None, out=None):
                 raise ZrnError("pkg-missing", f"pkg-config does not know {pkg!r}", f"install its -dev files, "
                                f"or remove it from [build] libs")
             extra += p.stdout.split()
-        cmd = [cc, std, "-O2", "-g", "-Wall", *proj.build.get("cflags", []), *z["cflags"],
+        # the same commit gives the same bytes wherever it is built (no build paths inside)
+        cmd = [cc, std, "-O2", "-g", "-Wall", f"-ffile-prefix-map={proj.root}=.", *proj.build.get("cflags", []), *z["cflags"],
                *[str(proj.root / s) for s in sources], "-o", str(binary), *z["libs"], *extra, "-lm"]
         _run(cmd, cwd=proj.root, what="compiling")
     elif proj.lang == "rust":
@@ -222,6 +223,7 @@ def build_project(proj, arch=None, out=None):
         import tomllib
         crate = tomllib.loads((proj.root / "Cargo.toml").read_text())["package"]["name"]
         env = run_env(z, {"ZRNUI_LIB_DIR": z["libdir"]} if z["libdir"] else {})
+        env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + f" --remap-path-prefix={proj.root}=.").strip()
         _run(["cargo", "build", "--release", "--quiet"], cwd=proj.root, env=env, what="cargo build")
         shutil.copy2(proj.root / "target" / "release" / crate, binary)
     else:  # python: nothing to compile, but every file must at least parse
