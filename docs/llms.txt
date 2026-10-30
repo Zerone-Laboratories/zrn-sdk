@@ -1,0 +1,35 @@
+# zrn-sdk
+
+> The ztOS app SDK: libzrnui (a C UI library drawn on the GPU with GLES2, in zrnCoolStyle or Metro), bindings for C++, Rust and Python over the same C ABI, the .zexec single-file app package (a #!/usr/bin/env zrn-exec line plus a zip, with a detached minisign signature), and the `zrn` CLI. Apps are pages of sections, cards, items, switches, sliders, fields and buttons; libzrnui does layout, scrolling, touch and page transitions. Every `zrn` command accepts --json.
+
+## Start here
+
+- [README.md](../README.md): install, first app, the commands
+- [templates/agents/SKILL.md](../templates/agents/SKILL.md): the API in four languages, style rules, how to check visuals headlessly
+- [DESIGN.md](../DESIGN.md): decisions, renderer comparison, zrnCoolStyle, .zexec spec, store flow, threat model, round 2
+
+## API
+
+- [libzrnui/include/zrnui.h](../libzrnui/include/zrnui.h): the C API (every function documented)
+- [libzrnui/include/zrnui.hpp](../libzrnui/include/zrnui.hpp): C++ wrapper (lambdas, RAII)
+- [rust/src/lib.rs](../rust/src/lib.rs): Rust crate `zrnui`
+- [python/zrnui/__init__.py](../python/zrnui/__init__.py): Python binding (ctypes, no Qt)
+
+## Examples
+
+- [examples/settings-c/main.c](../examples/settings-c/main.c): sections, icons, switches, sliders, a pushed page, a field, busy and toast
+- [examples/hello-c](../examples/hello-c), [hello-cpp](../examples/hello-cpp), [hello-rust](../examples/hello-rust), [hello-py](../examples/hello-py)
+
+## Tools
+
+- `zrn new NAME --lang c|cpp|rust|python`, `zrn build`, `zrn render [--page N|TITLE] [--style metro] [--theme light] [--scroll Y] out.png`
+- `zrn run [--headless --script "wait 500; tap X Y; type TEXT; snap out.png; back; quit"]`
+- `zrn pack`, `zrn verify FILE` (exit 0 good, 1 broken, 2 untrusted), `zrn install FILE`, `zrn submit [--send]`
+- `zrn doctor`, `zrn init-agents [--agent claude,codex|--all]`
+- Errors: `{"ok": false, "error": {"code", "message", "hint"}}` with --json
+
+## Optional
+
+- [tools/zrnlib/zexec.py](../tools/zrnlib/zexec.py): the package format in code
+- [tools/zrnlib/sign.py](../tools/zrnlib/sign.py): minisign-format signatures
+- [docs/renders](renders): what the examples look like

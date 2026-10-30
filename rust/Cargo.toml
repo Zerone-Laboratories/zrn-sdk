@@ -1,0 +1,13 @@
+[package]
+name = "zrnui"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "libzrnui for Rust: the ztOS app toolkit (GLES2, zrnCoolStyle), a safe wrapper over its C ABI"
+links = "zrnui"
+build = "build.rs"
+
+[dependencies]
+
+[lib]
+path = "src/lib.rs"

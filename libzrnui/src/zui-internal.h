@@ -1,0 +1,255 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+/* libzrnui internals: the node tree, the GPU batcher, text and the styles. */
+#ifndef ZUI_INTERNAL_H
+#define ZUI_INTERNAL_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "zrnui.h"
+
+#define ZUI_EXPORT __attribute__((visibility("default")))
+
+/* ------------------------------------------------------------------ gfx --- */
+/* A transform applied to every corner before the GPU's perspective divide:
+ * points in, points out, z toward the viewer. Row-major 4x4 on (x, y, z, 1). */
+struct zg_xf { float m[16]; };
+void zg_xf_identity(struct zg_xf *xf);
+bool zg_xf_is_identity(const struct zg_xf *xf);
+/* each of these applies after what xf already does */
+void zg_xf_translate(struct zg_xf *xf, float x, float y, float z);
+void zg_xf_scale_about(struct zg_xf *xf, float s, float cx, float cy);
+void zg_xf_rotate_y(struct zg_xf *xf, float deg, float px);	/* about the line x = px */
+void zg_xf_rotate_x(struct zg_xf *xf, float deg, float py);	/* about the line y = py */
+void zg_xf_apply(const struct zg_xf *xf, float x, float y, float out[3]);
+
+bool zg_init(void);		/* in a current GLES2 context */
+void zg_fini(void);
+unsigned zg_generation(void);	/* bumps on every zg_init: glyphs must be uploaded again */
+void zg_begin(int fb_w, int fb_h, float scale, uint32_t clear_rgba);
+void zg_end(void);
+float zui_gfx_scale(void);	/* pixels per point in the frame being drawn */
+void zg_set_xf(const struct zg_xf *xf);	/* NULL: none */
+const struct zg_xf *zg_get_xf(void);
+void zg_set_alpha(float a);			/* multiplies everything drawn */
+float zg_get_alpha(void);
+void zg_clip(float x, float y, float w, float h);	/* points; only without a transform */
+void zg_noclip(void);
+void zg_rect(float x, float y, float w, float h, float r, uint32_t rgba);
+void zg_border(float x, float y, float w, float h, float r, float width, uint32_t rgba);
+void zg_shadow(float x, float y, float w, float h, float r, float blur, uint32_t rgba);
+void zg_line(float x0, float y0, float x1, float y1, float width, uint32_t rgba);
+void zg_circle(float cx, float cy, float radius, uint32_t rgba);
+void zg_ring(float cx, float cy, float radius, float width, uint32_t rgba);
+/* an arc of a circle, as short strokes: angles in degrees, 0 = right, clockwise */
+void zg_arc(float cx, float cy, float radius, float a0, float a1, float width, uint32_t rgba);
+/* the glyph atlas: an 8-bit coverage texture shared by all text */
+#define ZG_ATLAS 2048
+bool zg_atlas_alloc(int w, int h, int *x, int *y);
+void zg_atlas_upload(int x, int y, int w, int h, const uint8_t *pixels, int pitch);
+void zg_atlas_reset(void);
+void zg_glyph(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t rgba);
+
+/* colours: 0xRRGGBBAA */
+static inline uint32_t zc_rgb(uint32_t rgb) { return (rgb << 8) | 0xff; }
+static inline uint32_t zc_alpha(uint32_t c, float a) {
+	uint32_t al = (uint32_t)((c & 0xff) * (a < 0 ? 0 : a > 1 ? 1 : a) + 0.5f);
+	return (c & 0xffffff00u) | al;
+}
+uint32_t zc_mix(uint32_t a, uint32_t b, float t);	/* a to b, alpha too */
+float zc_luma(uint32_t c);
+
+/* ----------------------------------------------------------------- text --- */
+enum zt_font { ZT_REGULAR, ZT_MEDIUM, ZT_STRONG, ZT_LIGHT, ZT_FONTS };
+struct zt_glyph { uint16_t face; uint32_t gid; float x, y; };	/* y: the baseline */
+struct zt_layout {
+	struct zt_glyph *g;
+	int n, lines;
+	float w, h, line_h, ascent, size;
+};
+/* what each role is in the style in use: font files or fontconfig names */
+void zt_set_fonts(const char *const files[ZT_FONTS], float line_spacing);
+/* max_w <= 0: one line, no wrapping; max_lines 1 with max_w > 0: ellipsis */
+struct zt_layout *zt_layout_make(const char *utf8, int font, float size, float max_w, int max_lines);
+void zt_layout_free(struct zt_layout *layout);
+void zt_draw(const struct zt_layout *layout, float x, float y, uint32_t rgba);
+void zt_draw_clipped(const struct zt_layout *layout, float x, float y, uint32_t rgba, float x0, float x1);
+float zt_width(const char *utf8, int font, float size);
+float zt_line_height(float size);
+void zt_fini(void);
+
+/* a node's cached text: laid out again only when something it depends on changes */
+struct zt_slot {
+	struct zt_layout *layout;
+	char *text;
+	int font, max_lines;
+	float size, max_w;
+	unsigned style_gen;
+};
+struct zt_layout *zt_slot_get(struct zt_slot *slot, const char *text, int font, float size,
+		float max_w, int max_lines);
+void zt_slot_free(struct zt_slot *slot);
+
+/* ------------------------------------------------------------- the tree --- */
+enum zui_kind {
+	ZK_PAGE, ZK_COLUMN, ZK_ROW, ZK_CARD, ZK_SECTION_LABEL, ZK_SPACE,
+	ZK_TEXT, ZK_HEADING, ZK_CAPTION, ZK_BUTTON, ZK_ITEM, ZK_SWITCH,
+	ZK_SLIDER, ZK_PROGRESS, ZK_FIELD,
+};
+
+/* something moving from one value to another over time */
+struct zanim { float from, to; uint32_t start, ms; };
+float zanim_value(const struct zanim *a, uint32_t now, bool *running);
+void zanim_go(struct zanim *a, float to, uint32_t ms, uint32_t now);
+void zanim_set(struct zanim *a, float value);
+
+struct zui_node {
+	zui_app *app;
+	int kind;
+	zui_node *parent, *first, *last, *next, *prev;
+	char *text, *subtitle, *detail, *icon;
+	double value, flex, space;
+	bool on, enabled, visible, focused;
+	int variant;
+	uint32_t tint;
+	zui_cb cb;
+	void *data;
+	zui_free_fn free_data;
+	int event;
+	/* the last layout, in page points */
+	float x, y, w, h;
+	struct zt_slot t[3];
+	struct zanim knob;	/* a switch's knob, 0 off .. 1 on */
+	struct zanim focus_anim;
+	/* a page */
+	float scroll, content_h, header_h, vel;
+	int depth;		/* 0 for the first page */
+	zui_node *back_to;	/* the page under this one */
+	struct zt_slot title_slot[2];
+};
+
+#define ZUI_MAX_FDS 32
+#define ZUI_MAX_TIMERS 64
+
+struct zui_timer_entry { int id; uint64_t due, every; zui_fn fn; void *data; };
+
+struct zui_app {
+	char *app_id, *title;
+	const struct zui_style *style;
+	bool light;
+	uint32_t accent;	/* 0xRRGGBB */
+	unsigned style_gen;
+	zui_node *page;		/* in front */
+	zui_node **pages;	/* every page made, freed with the app */
+	int n_pages, cap_pages;
+	float width, height;	/* points */
+	int scale;
+	bool running, dirty, laid_out;
+	int status;
+	/* moving between pages */
+	zui_node *trans_from, *trans_to;
+	int trans_dir;		/* 1 forward, -1 back */
+	uint32_t trans_start;
+	bool quit_after_trans;
+	/* the finger */
+	bool touching, dragging, scrolling_page;
+	float down_x, down_y, last_x, last_y, down_scroll;
+	uint32_t last_t;
+	zui_node *pressed, *drag_slider;
+	float press_fx, press_fy;
+	struct zanim press;
+	bool fling;
+	uint32_t fling_t;
+	zui_node *focus;	/* the field with the keyboard */
+	/* busy dots, toast */
+	bool busy;
+	uint32_t busy_since;
+	char *toast;
+	uint32_t toast_at;
+	/* the main loop */
+	struct { int fd; void (*ready)(int, void *); void *data; } fds[ZUI_MAX_FDS];
+	struct zui_timer_entry timers[ZUI_MAX_TIMERS];
+	int next_timer_id;
+	int post_fd;
+	struct zui_post *posts;
+	void *post_lock;
+	struct zui_wl *wl;	/* the window, when there is one */
+};
+
+uint32_t zui_now(void);
+void zui_redraw(zui_app *app);
+void zui_fire(zui_node *node, int event);
+bool zui_animating(zui_app *app);
+/* draw the app as it is now (pages, transitions, overlays) */
+void zui_draw(zui_app *app, uint32_t now);
+void zui_do_layout(zui_app *app, zui_node *page);
+void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time);
+void zui_scroll_by(zui_app *app, float dy);
+void zui_key_text(zui_app *app, const char *utf8);	/* "\b" backspace, "\n" enter */
+void zui_step(zui_app *app, uint32_t now);	/* flings and springs */
+const char *zui_data_dir(void);
+void zui_osk(zui_app *app, bool show);
+
+/* run the main loop with a window (wl.c) */
+int zui_wl_run(zui_app *app);
+void zui_wl_wake(zui_app *app);
+/* offscreen.c */
+int zui_offscreen_png(zui_app *app, zui_node *page, const char *path, int w, int h, int scale);
+int zui_png_write(const char *path, const uint8_t *rgba, int w, int h, bool flip);
+
+/* -------------------------------------------------------------- styles --- */
+struct zui_palette {
+	uint32_t bg, surface, surface2, text, text2, text3, divider, track, knob, shadow,
+		on_accent, accent_text, danger, scrim;
+};
+struct zui_metrics {
+	float margin, gap, card_r, card_pad, section_gap;
+	float text, heading, caption, label, title, bar_title;
+	float item_h, item_h2, item_title, item_sub, icon_tile;
+	float button_h, button_r, button_text;
+	float field_h, field_r;
+	float bar_h;	/* zrnCoolStyle: the bar along the top; Metro: the fixed header */
+	float large_title_h;
+};
+struct zui_style {
+	const char *name;
+	const char *fonts[ZT_FONTS];
+	float line_spacing;
+	int transition_ms;
+	struct zui_palette (*palette)(const zui_app *app);
+	struct zui_metrics m;
+	/* the fixed part of a page over its list, drawn last */
+	void (*header)(zui_app *app, zui_node *page, uint32_t now);
+	/* what a page has at its top that scrolls with it (zrnCoolStyle's large title) */
+	float (*page_top)(zui_app *app, zui_node *page, float y, bool draw);
+	void (*card)(zui_app *app, zui_node *card);
+	void (*divider)(zui_app *app, zui_node *card, zui_node *below);
+	void (*section_label)(zui_app *app, zui_node *n);
+	void (*button)(zui_app *app, zui_node *n, float press);
+	void (*item)(zui_app *app, zui_node *n, float press);
+	void (*toggle)(zui_app *app, zui_node *n, float x, float y, float knob);
+	void (*slider)(zui_app *app, zui_node *n);
+	void (*progress)(zui_app *app, zui_node *n, uint32_t now);
+	void (*field)(zui_app *app, zui_node *n, uint32_t now);
+	void (*busy)(zui_app *app, uint32_t now);
+	void (*toast)(zui_app *app, const char *text, float shown);
+	/* the press: a transform for the node under the finger (amount 0..1) */
+	void (*press_xf)(zui_app *app, zui_node *n, float amount, float fx, float fy, struct zg_xf *xf);
+	/* a page coming or going: t 0..1 through the change, dir 1 forward, row
+	 * the index of a thing on the page (-1 the header) */
+	void (*page_xf)(zui_app *app, float t, int dir, bool incoming, int row, int rows,
+			struct zg_xf *xf, float *alpha);
+	/* does the press fill the whole row (lists) or tilt it */
+	bool rows_highlight;
+	bool flat_cards;	/* a card's rows move one by one in page changes */
+};
+extern const struct zui_style zui_style_cool, zui_style_metro;
+const struct zui_style *zui_style_find(const char *name);
+struct zui_palette zui_pal(const zui_app *app);
+/* a small picture by name, in a box `size` points across */
+void zui_icon(const char *name, float x, float y, float size, float stroke, uint32_t rgba);
+float zui_ease_out(float t);		/* cubic */
+float zui_ease_emph(float t);		/* zrnCoolStyle's settle: quick start, long soft end */
+float zui_ease_in(float t);
+
+#endif
