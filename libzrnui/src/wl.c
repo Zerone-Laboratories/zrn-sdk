@@ -320,6 +320,18 @@ static const struct wl_registry_listener registry_listener = { .global = reg_glo
 static void frame_done(void *d, struct wl_callback *cb, uint32_t time);
 static const struct wl_callback_listener frame_listener = { .done = frame_done };
 
+/* ZUI_PERFLOG=1: what building and submitting a frame costs the CPU (every
+ * 60 frames, and at exit) */
+static struct { int on, n, fw, fh; double sum, worst; } perf = { .on = -1 };
+
+static void perf_report(void) {
+	if (!perf.n) return;
+	fprintf(stderr, "zrnui: frame CPU %.2f ms average, %.2f ms worst (%d frames, %dx%d px)\n",
+		perf.sum / perf.n, perf.worst, perf.n, perf.fw, perf.fh);
+	perf.sum = perf.worst = 0;
+	perf.n = 0;
+}
+
 static void render(struct zui_wl *w) {
 	zui_app *app = w->app;
 	int scale = scale_of(w);
@@ -330,12 +342,24 @@ static void render(struct zui_wl *w) {
 	wl_egl_window_resize(w->egl_window, fw, fh, 0, 0);
 	wl_surface_set_buffer_scale(w->surface, scale);
 	uint32_t now = zui_now();
+	struct timespec t0, t1;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
 	zui_step(app, now);
 	app->dirty = false;
 	struct zui_palette pal = zui_pal(app);
 	zg_begin(fw, fh, (float)scale, pal.bg);
 	zui_draw(app, now);
 	zg_end();
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	if (perf.on < 0) perf.on = getenv("ZUI_PERFLOG") != NULL;
+	if (perf.on) {
+		double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+		perf.sum += ms;
+		if (ms > perf.worst) perf.worst = ms;
+		perf.fw = fw;
+		perf.fh = fh;
+		if (++perf.n == 60) perf_report();
+	}
 	if (w->snap_pending) {
 		uint8_t *px = malloc((size_t)fw * fh * 4);
 		glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px);
@@ -588,6 +612,7 @@ int zui_wl_run(zui_app *app) {
 			}
 		}
 	}
+	if (perf.on > 0) perf_report();
 	zg_fini();
 	eglMakeCurrent(w->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 	if (w->egl_surface) eglDestroySurface(w->egl_display, w->egl_surface);

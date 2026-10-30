@@ -89,6 +89,18 @@ fling, a spring, a switch's knob, a toast, an indeterminate bar), paced by the
 compositor's frame callbacks; otherwise the process sleeps in `poll`. The
 caret does not blink, so a focused field costs nothing at rest.
 
+**Cost.** `ZUI_PERFLOG=1` prints what building and submitting a frame costs
+the CPU. Measured on the laptop (i7-3615QM, 2012) in kwin_wayland's virtual
+backend at the S9's 1440x2960 (scale 4), the settings example scrolling,
+flinging and changing pages: 1.35 ms a frame on average in zrnCoolStyle and
+0.78 ms in Metro; the worst frame (17-22 ms) is the first, which rasterises
+the glyphs into the atlas. CPU side only, not the GPU's time; the phone's
+A55 cores are slower, so these say little more than "small".
+
+**Scripts.** HarfBuzz shapes Sinhala (with ZWJ conjuncts), Tamil, Greek and
+Cyrillic; CJK and anything Inter lacks come from fontconfig's fallback
+(`docs/renders/scripts.png`).
+
 **Scale.** Layout is in points. The pixel scale is `ZUI_SCALE`, else the
 shell's `ZTMETRO_SCALE` (4 on the S9: 1440x2960 pixels is 360x740 points),
 else the compositor's preferred buffer scale, else the output's.
@@ -403,7 +415,7 @@ In order of value:
 
 - Nothing ran on the phone (a sleep bench is running on it; by instruction).
   Performance on the Mali-G72 is inferred from the design (a few draw calls,
-  no per-frame raster), not measured.
+  no per-frame raster) and the laptop's CPU numbers above, not measured.
 - No aarch64 build: there is no cross compiler on the laptop; every `.zexec`
   made here is x86_64 (or `any` for Python).
 - `zrn run` without `--headless` (a visible nested window on the X11 desktop)
