@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: LGPL-2.1-or-later
 """libzrnui for Python: the same C library as C, C++ and Rust apps, over ctypes.
 
     import zrnui

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * A page drawn with no compositor: an EGL context on Mesa's surfaceless
  * platform (or a GBM render node), a framebuffer object, glReadPixels, PNG.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * Text: HarfBuzz shapes in font units (so a layout is the same at every
  * scale, on the laptop and on the phone), FreeType draws each glyph once at

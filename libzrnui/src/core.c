@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * The node tree: making and changing things, laying pages out, the finger
  * (press, tap, scroll, fling, drag a slider), moving between pages, and

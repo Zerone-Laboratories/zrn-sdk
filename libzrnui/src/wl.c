@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * The window: a plain Wayland client (xdg-shell, wl_egl, GLES2), the frame
  * clock (a frame is drawn only when something changed or moves, paced by the

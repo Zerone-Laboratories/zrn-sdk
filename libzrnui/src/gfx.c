@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * The GPU batcher. Everything libzrnui draws is a rounded rectangle (filled,
  * outlined or as a soft shadow, lines being thin rotated ones) or a glyph

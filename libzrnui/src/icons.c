@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /* A small set of line icons, drawn as strokes on a 24-unit grid. */
 #include <string.h>
 #include "zui-internal.h"

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * Metro (ztRetrofit): the same widgets as ztMETRO's own apps draw them with
  * ZrnMetroCore. Black, white type in Segoe's open twin (Selawik), the app's

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 //! libzrnui for Rust: the ztOS app toolkit. The same C library as C, C++ and
 //! Python apps (widgets drawn on the GPU, zrnCoolStyle by default), with
 //! closures for callbacks and lifetimes that keep nodes from outliving their app.

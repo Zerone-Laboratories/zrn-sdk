@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /* libzrnui internals: the node tree, the GPU batcher, text and the styles. */
 #ifndef ZUI_INTERNAL_H
 #define ZUI_INTERNAL_H

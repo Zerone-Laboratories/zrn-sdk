@@ -2,7 +2,8 @@
 
 | What | Licence |
 |---|---|
-| libzrnui (`libzrnui/`), the bindings (`python/`, `rust/`, `zrnui.hpp`), the tools (`tools/`) | GPL-2.0-or-later (`COPYING`) |
+| libzrnui (`libzrnui/`) and the bindings (`python/`, `rust/`, `zrnui.hpp`) | LGPL-2.1-or-later (`COPYING.LESSER`): apps under any licence can link them |
+| the tools (`tools/`) and tests (`tests/`) | GPL-2.0-or-later (`COPYING`) |
 | examples (`examples/`) and project templates (`templates/`) | MIT (below): copy them into your app freely |
 | Inter (`libzrnui/fonts/Inter-*.ttf`) | SIL Open Font License 1.1 (`libzrnui/fonts/Inter-LICENSE.txt`), from github.com/rsms/inter v4.1 |
 | Selawik (`libzrnui/fonts/Selawik-*.ttf`) | SIL Open Font License 1.1 (`libzrnui/fonts/Selawik-LICENSE.txt`), from github.com/microsoft/Selawik 1.01 |

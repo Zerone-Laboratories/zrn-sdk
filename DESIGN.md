@@ -34,7 +34,7 @@ phone yet (see [What is not done](#what-is-not-done)).
 | D7 | Fonts are **bundled**: Inter (zrnCoolStyle) and Selawik (Metro, Segoe UI's open metric twin), both SIL OFL 1.1 | The look must not depend on what fonts a phone happens to have. |
 | D8 | **.zexec = `#!/usr/bin/env zrn-exec` line + a zip**, with a detached **minisign** signature | Runnable directly (the kernel's `#!`), but verified before any of it runs, with no architecture-specific stub inside every app. |
 | D9 | The store **builds from source at a pinned commit**, approved by a **Discord moderator**, signed in a **separate CI job** that never runs app code | Strangers' binaries are never accepted; a repository changing after approval changes nothing. |
-| D10 | Licence: **GPL-2.0-or-later** for libzrnui, the bindings and the tools (as ztmetro); **MIT** for examples and templates | Matches the code it came from. See the open question under [Round 2](#round-2): LGPL for libzrnui would let non-GPL apps link. |
+| D10 | Licence: **LGPL-2.1-or-later** for libzrnui and the bindings, so apps under any licence can link; **GPL-2.0-or-later** for the tools; **MIT** for examples and templates | Matches the code it came from. See the open question under [Round 2](#round-2): LGPL for libzrnui would let non-GPL apps link. |
 
 ## Why our own renderer
 
@@ -407,9 +407,6 @@ In order of value:
 8. Widgets: images, lists of thousands (virtualised), pivots/tabs, dialogs,
    menus, pickers, date/time, pull to refresh, bidirectional text,
    accessibility (screen reader names on nodes).
-9. **Licence question for the owner**: LGPL-2.1-or-later for libzrnui and the
-   bindings would let apps under any licence link; today GPL-2.0-or-later means
-   every native store app must be GPL-compatible.
 
 ## What is not done
 

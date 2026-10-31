@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * libzrnui for C++: the same library as zrnui.h, with lambdas for callbacks
  * and an App that frees everything when it goes out of scope. Header only.
