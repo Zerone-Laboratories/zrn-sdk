@@ -1,66 +1,33 @@
-/* The 3x5 dot type of ztOS's DotMatrix style (ztmetro/retro, from ZrnDotMatrix). */
-static const char *const dm_f3[256] = {
-	[48] = "XXX X.X X.X X.X XXX",	/* 0 */
-	[49] = ".X. XX. .X. .X. XXX",	/* 1 */
-	[50] = "XXX ..X XXX X.. XXX",	/* 2 */
-	[51] = "XXX ..X XXX ..X XXX",	/* 3 */
-	[52] = "X.X X.X XXX ..X ..X",	/* 4 */
-	[53] = "XXX X.. XXX ..X XXX",	/* 5 */
-	[54] = "XXX X.. XXX X.X XXX",	/* 6 */
-	[55] = "XXX ..X ..X ..X ..X",	/* 7 */
-	[56] = "XXX X.X XXX X.X XXX",	/* 8 */
-	[57] = "XXX X.X XXX ..X XXX",	/* 9 */
-	[65] = ".X. X.X XXX X.X X.X",	/* A */
-	[66] = "XX. X.X XX. X.X XX.",	/* B */
-	[67] = ".XX X.. X.. X.. .XX",	/* C */
-	[68] = "XX. X.X X.X X.X XX.",	/* D */
-	[69] = "XXX X.. XX. X.. XXX",	/* E */
-	[70] = "XXX X.. XX. X.. X..",	/* F */
-	[71] = ".XX X.. X.X X.X .XX",	/* G */
-	[72] = "X.X X.X XXX X.X X.X",	/* H */
-	[73] = "XXX .X. .X. .X. XXX",	/* I */
-	[74] = "..X ..X ..X X.X .X.",	/* J */
-	[75] = "X.X X.X XX. X.X X.X",	/* K */
-	[76] = "X.. X.. X.. X.. XXX",	/* L */
-	[77] = "X.X XXX XXX X.X X.X",	/* M */
-	[78] = "XX. X.X X.X X.X X.X",	/* N */
-	[79] = ".X. X.X X.X X.X .X.",	/* O */
-	[80] = "XX. X.X XX. X.. X..",	/* P */
-	[81] = ".X. X.X X.X XX. .XX",	/* Q */
-	[82] = "XX. X.X XX. X.X X.X",	/* R */
-	[83] = ".XX X.. .X. ..X XX.",	/* S */
-	[84] = "XXX .X. .X. .X. .X.",	/* T */
-	[85] = "X.X X.X X.X X.X .XX",	/* U */
-	[86] = "X.X X.X X.X .X. .X.",	/* V */
-	[87] = "X.X X.X XXX XXX X.X",	/* W */
-	[88] = "X.X X.X .X. X.X X.X",	/* X */
-	[89] = "X.X X.X .X. .X. .X.",	/* Y */
-	[90] = "XXX ..X .X. X.. XXX",	/* Z */
-	[37] = "X.X ..X .X. X.. X.X",	/* % */
-	[45] = "... ... XXX ... ...",	/* - */
-	[176] = "XX. XX. ... ... ...",	/* ° */
-	[32] = "... ... ... ... ...",	/*   */
-	[58] = ". X . X .",	/* : */
-	[46] = ". . . . X",	/* . */
-	[43] = "... .X. XXX .X. ...",	/* + */
-	[47] = "..X ..X .X. X.. X..",	/* / */
-	[36] = ".XX XX. .X. .XX XX.",	/* $ */
-	[62] = "X.. .X. ..X .X. X..",	/* > */
-	[60] = "..X .X. X.. .X. ..X",	/* < */
-	[95] = "... ... ... ... XXX",	/* _ */
-	[126] = "... X.. XXX ..X ...",	/* ~ */
-	[35] = "X.X XXX X.X XXX X.X",	/* # */
-	[61] = "... XXX ... XXX ...",	/* = */
-	[33] = "X X X . X",	/* ! */
-	[63] = "XX. ..X .X. ... .X.",	/* ? */
-	[40] = ".X X. X. X. .X",	/* ( */
-	[41] = "X. .X .X .X X.",	/* ) */
-	[91] = "XX X. X. X. XX",	/* [ */
-	[93] = "XX .X .X .X XX",	/* ] */
-	[39] = "X X . . .",	/* \' */
-	[44] = ". . . X X",	/* , */
-	[64] = ".X. X.X XXX X.. .XX",	/* @ */
-	[42] = "... X.X .X. X.X ...",	/* * */
-	[124] = "X X X X X",	/* | */
-	[38] = ".X. X.X .X. X.X .XX",	/* & */
+// SPDX-License-Identifier: LGPL-2.1-or-later
+/*
+ * libzrnui's dot type. Original to this library: each glyph was designed here,
+ * not taken from another table. Five rows, separated by spaces; X is a lit dot.
+ * Lower case letters are drawn as upper case by the caller.
+ */
+static const char *const dot_font[128] = {
+	[' '] = "... ... ... ... ...",
+	['A'] = ".X. X.X XXX X.X X.X", ['B'] = "XX. X.X XX. X.X XX.", ['C'] = ".XX X.. X.. X.. .XX",
+	['D'] = "XX. X.X X.X X.X XX.", ['E'] = "XXX X.. XX. X.. XXX", ['F'] = "XXX X.. XX. X.. X..",
+	['G'] = ".XX X.. X.X X.X .XX", ['H'] = "X.X X.X XXX X.X X.X", ['I'] = "XXX .X. .X. .X. XXX",
+	['J'] = "..X ..X ..X X.X .X.", ['K'] = "X.X X.X XX. X.X X.X", ['L'] = "X.. X.. X.. X.. XXX",
+	['M'] = "X...X XX.XX X.X.X X...X X...X", ['N'] = "X..X XX.X X.XX X..X X..X",
+	['O'] = ".X. X.X X.X X.X .X.", ['P'] = "XX. X.X XX. X.. X..", ['Q'] = ".X. X.X X.X XX. .XX",
+	['R'] = "XX. X.X XX. X.X X.X", ['S'] = ".XX X.. .X. ..X XX.", ['T'] = "XXX .X. .X. .X. .X.",
+	['U'] = "X.X X.X X.X X.X XXX", ['V'] = "X.X X.X X.X X.X .X.",
+	['W'] = "X...X X...X X.X.X XX.XX X...X", ['X'] = "X.X X.X .X. X.X X.X",
+	['Y'] = "X.X X.X .X. .X. .X.", ['Z'] = "XXX ..X .X. X.. XXX",
+	['0'] = "XXX X.X X.X X.X XXX", ['1'] = ".X. XX. .X. .X. XXX", ['2'] = "XX. ..X .X. X.. XXX",
+	['3'] = "XX. ..X .X. ..X XX.", ['4'] = "X.X X.X XXX ..X ..X", ['5'] = "XXX X.. XX. ..X XX.",
+	['6'] = ".XX X.. XXX X.X XXX", ['7'] = "XXX ..X .X. .X. .X.", ['8'] = "XXX X.X XXX X.X XXX",
+	['9'] = "XXX X.X XXX ..X XX.",
+	['.'] = ". . . . X", [','] = ".. .. .. .X X.", [':'] = ". X . X .", [';'] = ".. .X .. .X X.",
+	['!'] = "X X X . X", ['?'] = "XX. ..X .X. ... .X.", ['\''] = "X X . . .", ['"'] = "X.X X.X ... ... ...",
+	['-'] = "... ... XXX ... ...", ['_'] = "... ... ... ... XXX", ['+'] = "... .X. XXX .X. ...",
+	['='] = "... XXX ... XXX ...", ['*'] = "... X.X .X. X.X ...", ['/'] = "..X ..X .X. X.. X..",
+	['\\'] = "X.. X.. .X. ..X ..X", ['('] = ".X X. X. X. .X", [')'] = "X. .X .X .X X.",
+	['['] = "XX X. X. X. XX", [']'] = "XX .X .X .X XX", ['{'] = ".XX .X. XX. .X. .XX", ['}'] = "XX. .X. .XX .X. XX.",
+	['<'] = "..X .X. X.. .X. ..X", ['>'] = "X.. .X. ..X .X. X..", ['%'] = "X.X ..X .X. X.. X.X",
+	['&'] = ".X. X.X .X. X.X .XX", ['#'] = "X.X XXX X.X XXX X.X", ['@'] = "XXX X.X X.X X.. XXX",
+	['$'] = ".XX XX. .X. .XX XX.", ['^'] = ".X. X.X ... ... ...", ['~'] = "... .XX XX. ... ...",
+	['|'] = "X X X X X", ['`'] = "X. .X .. .. ..",
 };

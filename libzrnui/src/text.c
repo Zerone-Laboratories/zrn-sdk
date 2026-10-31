@@ -264,16 +264,13 @@ static bool dot_type;
 #define DOT_FACE 0xffff
 void zt_set_dot_type(bool on) { dot_type = on; T.fonts_gen++; }
 
+/* the next character's glyph; anything the table lacks shows as a question mark */
 static const char *dot_glyph(const unsigned char **p) {
-	int ch = **p;
-	if (ch >= 0x80) {
-		while (((*p)[1] & 0xc0) == 0x80) (*p)++;
-		ch = '?';
-	}
-	(*p)++;
-	if (dm_f3[ch]) return dm_f3[ch];
-	if (ch < 128 && dm_f3[toupper(ch)]) return dm_f3[toupper(ch)];
-	return dm_f3[' '];
+	unsigned c = *(*p)++;
+	while (c >= 0x80 && (**p & 0xc0) == 0x80) (*p)++;
+	if (c >= 0x80) return dot_font['?'];
+	const char *g = dot_font[toupper((int)c)];
+	return g ? g : c < 0x20 ? dot_font[' '] : dot_font['?'];
 }
 static int dot_w(const char *g) { int w = 0; while (g[w] && g[w] != ' ') w++; return w; }
 

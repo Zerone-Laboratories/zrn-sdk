@@ -136,7 +136,7 @@ turnstile between pages. Numbers are ZrnMetroCore's.
 
 The same widgets in the same places. Everything filled is drawn by one fragment
 shader as dots 2.3 pt apart on one lattice, lit where the shape covers the cell's
-centre; text is the 3x5 dot type (`src/dot-font.h`, from `ztmetro/retro`), upper
+centre; text is the 3x5 dot type (`src/dot-font.h`, drawn for this library), upper
 case, with no shaping, so scripts other than Latin come out as `?`, as in
 ztMETRO. Pictures are dots of the palette's main colour at their brightness. The
 six palettes and `dotmatrix_palette` are ztMETRO's. The accent is the palette's:
