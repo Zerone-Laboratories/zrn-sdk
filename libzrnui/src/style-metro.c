@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /*
- * Metro (ztRetrofit): the same widgets as ztMETRO's own apps draw them with
+ * Metro: the same widgets as ztMETRO's own apps draw them with
  * ZrnMetroCore. Black, white type in Segoe's open twin (Selawik), the app's
  * name in capitals over a large lowercase title, rectangular toggles and
  * outlined buttons, the accent for what is on. A press tilts what is under
@@ -16,11 +16,11 @@
 
 static struct zui_palette metro_palette(const zui_app *app) {
 	struct zui_palette p = {
-		.bg = 0x000000ff, .surface = 0x000000ff, .surface2 = 0x1f1f1fff,
+		.bg = 0x000000ff, .surface = 0x000000ff, .surface2 = 0x1a1a1aff,
 		.text = 0xffffffff, .text2 = 0x999999ff, .text3 = 0x666666ff,
 		.divider = 0x00000000, .track = 0x333333ff, .knob = 0xffffffff,
 		.shadow = 0x00000000, .danger = 0xe51400ff, .scrim = 0x000000b3,
-		.on_accent = 0xffffffff,
+		.on_accent = 0xffffffff, .bubble_caption = 0xd1d1d1ff,
 	};
 	p.accent_text = zc_rgb(app->accent);
 	return p;
@@ -51,13 +51,25 @@ static float page_top(zui_app *app, zui_node *page, float y, bool draw) {
 
 static void header(zui_app *app, zui_node *page, uint32_t now) {
 	(void)now;
-	struct zui_palette pal = metro_palette(app);
+	struct zui_palette pal = app->style->palette(app);
 	zg_rect(0, 0, app->width, M.bar_h, 0, pal.bg);
+	if (page->compact) {
+		/* a person's name, as Messaging has it, and a line under it */
+		char *caps2 = upper(app->title);
+		zt_draw(zt_slot_get(&page->title_slot[1], caps2, ZT_STRONG, 11.5f, app->width - 2 * M.margin, 1), M.margin, 12, pal.text);
+		free(caps2);
+		zt_draw(zt_slot_get(&page->title_slot[0], page->text, ZT_LIGHT, 28, app->width - 2 * M.margin, 1), M.margin, 40, pal.text);
+		if (page->subtitle && *page->subtitle)
+			zt_draw(zt_slot_get(&page->t[1], page->subtitle, ZT_REGULAR, 13, app->width - 2 * M.margin, 1), M.margin, 80, pal.text2);
+		return;
+	}
 	char *caps = upper(app->title), *title = lower(page->text);
 	struct zt_layout *C = zt_slot_get(&page->title_slot[1], caps, ZT_STRONG, 11.5f, app->width - 2 * M.margin, 1);
 	zt_draw(C, M.margin, 12, pal.text);
-	struct zt_layout *T = zt_slot_get(&page->title_slot[0], title, ZT_LIGHT, M.title, 0, 0);
-	zt_draw(T, M.margin - 3, 20, pal.text);
+	if (!page->tabs) {
+		struct zt_layout *T = zt_slot_get(&page->title_slot[0], title, ZT_LIGHT, M.title, 0, 0);
+		zt_draw(T, M.margin - 3, 20, pal.text);
+	}
 	free(caps);
 	free(title);
 }
@@ -66,15 +78,25 @@ static void card(zui_app *app, zui_node *n) { (void)app; (void)n; }
 static void divider(zui_app *app, zui_node *c, zui_node *b) { (void)app; (void)c; (void)b; }
 
 static void section_label(zui_app *app, zui_node *n) {
-	struct zui_palette pal = metro_palette(app);
+	struct zui_palette pal = app->style->palette(app);
 	struct zt_layout *L = zt_slot_get(&n->t[0], n->text, ZT_REGULAR, M.label, n->w, 1);
 	zt_draw(L, n->x, n->y + M.section_gap, pal.text2);
 }
 
 static void button(zui_app *app, zui_node *n, float press) {
-	struct zui_palette pal = metro_palette(app);
+	struct zui_palette pal = app->style->palette(app);
 	float x = n->x, w = n->w, y = n->y, h = M.button_h;
 	bool down = press > 0.5f;
+	if (n->icon) {
+		float cx = x + w / 2, cy = y + 22;
+		uint32_t c = n->enabled ? pal.text : pal.text2;
+		if (down) zg_circle(cx, cy, 22, c);
+		else zg_ring(cx, cy, 22, 2, c);
+		zui_icon(n->icon, cx - 12, cy - 12, 24, 2, down ? 0x000000ff : c);
+		struct zt_layout *W = zt_slot_get(&n->t[0], n->text, ZT_REGULAR, 11.5f, w, 1);
+		zt_draw(W, x + (w - W->w) / 2, y + 48, c);
+		return;
+	}
 	uint32_t edge = n->variant == ZUI_DANGER ? pal.danger : pal.text;
 	if (down) zg_rect(x, y, w, h, 0, edge);
 	else if (n->variant == ZUI_PRIMARY) {
@@ -91,16 +113,99 @@ static void button(zui_app *app, zui_node *n, float press) {
  * and a white block that sits right when on */
 static void toggle(zui_app *app, zui_node *n, float x, float y, float k) {
 	(void)n;
-	struct zui_palette pal = metro_palette(app);
+	struct zui_palette pal = app->style->palette(app);
 	zg_border(x, y, 54, 24, 0, 2, pal.text);
 	zg_rect(x + 4, y + 4, 46, 16, 0, zc_mix(pal.track, zc_rgb(app->accent), k));
 	zg_rect(x + 1 + k * 40, y - 1, 12, 26, 0, pal.text);
 }
 
+/* Pivot: the tab in front's title, the next ones grey after it, going round */
+static void tabs(zui_app *app, zui_node *n, float pos) {
+	struct zui_palette pal = app->style->palette(app);
+	int count = zui_tab_count(n), cur = n->tab_cur;
+	float frac = pos - (float)cur;
+	struct zt_layout *C = zt_slot_get(&n->t[1], app->title, ZT_STRONG, 11.5f, 0, 1);
+	(void)C;
+	float at = M.margin - 3;
+	zui_node *front = zui_tab_at(n, cur);
+	struct zt_layout *F = zt_slot_get(&front->title_slot[0], front->text, ZT_LIGHT, M.title, 0, 0);
+	at -= frac * (F->w + 16);
+	for (int k = 0; k < 4 && at < app->width; k++) {
+		zui_node *t = zui_tab_at(n, (cur + k) % count);
+		struct zt_layout *L = zt_slot_get(&t->title_slot[k == 0 ? 0 : 1], t->text, ZT_LIGHT, M.title, 0, 0);
+		zt_draw(L, at, 20, k == 0 ? pal.text : pal.text3);
+		at += L->w + 16;
+	}
+}
+
+/* Messaging's: theirs in the accent with a tail at the top left, yours a darker
+ * shade with one at the bottom right */
+static void tail(zui_app *app, zui_node *n, uint32_t c) {
+	float x0 = n->mine ? n->x + n->w - 12 : n->x;
+	float top = n->mine ? n->y + n->h : n->y;
+	for (int i = 0; i < 12; i += 2) {
+		float len = n->mine ? (12 - i) * 0.67f : (12 - i) * 0.67f;
+		zg_rect(x0 + (n->mine ? i : 0) + (n->mine ? 0 : i), n->mine ? top : top + 8 - len, 2, len, 0, c);
+	}
+	(void)app;
+}
+static void bubble(zui_app *app, zui_node *n) {
+	uint32_t a = zc_rgb(app->accent), c = n->mine ? zc_mix(a, 0x000000ff, 0.5f) : a;
+	tail(app, n, c);
+	zg_rect(n->x, n->y + 8, n->w, n->h - 8, 0, c);
+}
+static void dot_bubble(zui_app *app, zui_node *n) {
+	struct zui_palette pal = app->style->palette(app);
+	uint32_t c = n->mine ? pal.text : zc_rgb(app->accent);
+	tail(app, n, c);
+	zg_border(n->x, n->y + 8, n->w, n->h - 8, 0, 1.2f, c);
+}
+
+static void foot(zui_app *app, zui_node *n) {
+	struct zui_palette pal = app->style->palette(app);
+	bool grey = n->parent && n->parent->tabs;
+	zg_rect(0, n->y - 8, app->width, app->height - n->y + 8, 0, grey ? pal.surface2 : pal.bg);
+}
+
+/* a row with a tile: Messaging's thread row */
+static void thread_row(zui_app *app, zui_node *n) {
+	struct zui_palette pal = app->style->palette(app);
+	float x = n->x, y = n->y, w = n->w, left = x + 56 + 12, right = x + w;
+	zui_draw_leading(app, n, x, y, 56, 0, 0xffffffff);
+	float when = 0;
+	if (n->detail && *n->detail) {
+		struct zt_layout *D = zt_slot_get(&n->t[3], n->detail, ZT_REGULAR, 12.5f, 0, 0);
+		when = D->w;
+		zt_draw(D, right - when, y + 8, pal.text2);
+	}
+	struct zt_layout *T = zt_slot_get(&n->t[0], n->text, n->emphasis ? ZT_STRONG : ZT_LIGHT, 24, right - left - when - 10, 1);
+	zt_draw(T, left, y - 3, n->emphasis ? pal.accent_text : pal.text);
+	float line_right = right;
+	if (n->badge) {
+		struct zt_layout *B = zt_slot_get(&n->t[4], n->badge, ZT_STRONG, 13, 0, 0);
+		float bw = B->w + 10 < 22 ? 22 : B->w + 10;
+		zg_rect(right - bw, y + 31, bw, 20, 0, zc_rgb(app->accent));
+		zt_draw(B, right - bw + (bw - B->w) / 2, y + 31 + (20 - B->line_h) / 2, 0xffffffff);
+		line_right -= bw + 8;
+	}
+	if (n->subtitle && *n->subtitle) {
+		struct zt_layout *S = zt_slot_get(&n->t[1], n->subtitle, ZT_REGULAR, 14, line_right - left, 1);
+		zt_draw(S, left, y + 30, n->emphasis ? pal.text : pal.text2);
+	}
+}
+
 static void item(zui_app *app, zui_node *n, float press) {
 	(void)press;
-	struct zui_palette pal = metro_palette(app);
+	struct zui_palette pal = app->style->palette(app);
 	float x = n->x, y = n->y, w = n->w, h = n->h, right = x + w;
+	if (n->pix || n->monogram) {
+		thread_row(app, n);
+		return;
+	}
+	if (n->icon) {
+		zui_icon(n->icon, x, y + (h - 26) / 2, 26, 2, pal.text);
+		x += 40;
+	}
 	if (n->kind == ZK_SWITCH) {
 		float k = zanim_value(&n->knob, zui_now(), NULL);
 		toggle(app, n, right - 54, y + 10, k);
@@ -128,7 +233,7 @@ static void item(zui_app *app, zui_node *n, float press) {
 }
 
 static void slider(zui_app *app, zui_node *n) {
-	struct zui_palette pal = metro_palette(app);
+	struct zui_palette pal = app->style->palette(app);
 	float x = n->x, w = n->w, y = n->y;
 	char pct[16];
 	snprintf(pct, sizeof(pct), "%d%%", (int)lround(n->value * 100));
@@ -167,20 +272,30 @@ static void progress(zui_app *app, zui_node *n, uint32_t now) {
 /* ZrnMetroCore's zmc_textbox: a caption, then a box, white while typed into */
 static void field(zui_app *app, zui_node *n, uint32_t now) {
 	(void)now;
-	struct zui_palette pal = metro_palette(app);
+	struct zui_palette pal = app->style->palette(app);
 	float x = n->x, w = n->w, y = n->y;
-	struct zt_layout *C = zt_slot_get(&n->t[1], n->subtitle ? n->subtitle : "", ZT_REGULAR, 13, w, 1);
-	zt_draw(C, x, y, pal.text2);
-	float by = y + 22, h = M.field_h;
-	zg_rect(x, by, w, h, 0, n->focused ? 0xffffffff : 0xc7c7c7ff);
+	bool dotted = app->style == &zui_style_dotmatrix;
+	float by = n->inline_hint ? y : y + 22, h = M.field_h;
+	if (!n->inline_hint) {
+		struct zt_layout *C = zt_slot_get(&n->t[1], n->subtitle ? n->subtitle : "", ZT_REGULAR, 13, w, 1);
+		zt_draw(C, x, y, pal.text2);
+	}
+	/* Metro's box is pale with dark text; a pale fill of dots would drown the text */
+	uint32_t ink = dotted ? pal.text : 0x000000ff;
+	if (dotted) zg_border(x, by, w, h, 0, 1.2f, pal.text);
+	else zg_rect(x, by, w, h, 0, n->focused ? 0xffffffff : 0xcfcfcfff);
+	if (n->inline_hint && (!n->text || !*n->text) && !n->focused) {
+		struct zt_layout *P = zt_slot_get(&n->t[1], n->subtitle ? n->subtitle : "", ZT_REGULAR, 16, w - 20, 1);
+		zt_draw(P, x + 10, by + (h - P->line_h) / 2, dotted ? pal.text2 : 0x595959ff);
+	}
 	float avail = w - 16, end = 0;
 	if (n->text && *n->text) {
 		struct zt_layout *T = zt_slot_get(&n->t[0], n->text, ZT_REGULAR, 17, n->focused ? 0 : avail, n->focused ? 0 : 1);
 		float shift = n->focused && T->w > avail - 4 ? T->w - (avail - 4) : 0;
-		zt_draw_clipped(T, x + 8 - shift, by + (h - T->line_h) / 2, 0x000000ff, shift, shift + avail);
+		zt_draw_clipped(T, x + 8 - shift, by + (h - T->line_h) / 2, ink, shift, shift + avail);
 		end = T->w - shift;
 	}
-	if (n->focused) zg_rect(x + 8 + end + 1, by + 8, 1.5f, h - 16, 0, 0x000000ff);
+	if (n->focused) zg_rect(x + 8 + end + 1, by + 8, 1.5f, h - 16, 0, ink);
 }
 
 static void busy(zui_app *app, uint32_t now) {
@@ -259,7 +374,7 @@ const struct zui_style zui_style_metro = {
 		.text = 16, .heading = 25.5f, .caption = 13, .label = 13, .title = 48, .bar_title = 0,
 		.item_h = 52, .item_h2 = 66, .item_title = 21, .item_sub = 13, .icon_tile = 0,
 		.button_h = 40, .button_r = 0, .button_text = 14.5f,
-		.field_h = 38, .field_r = 0,
+		.field_h = 44, .field_r = 0,
 		.bar_h = 108, .large_title_h = 0,
 	},
 	.header = header,
@@ -275,6 +390,68 @@ const struct zui_style zui_style_metro = {
 	.field = field,
 	.busy = busy,
 	.toast = toast,
+	.tabs = tabs,
+	.tabs_h = 0,
+	.bubble = bubble,
+	.bubble_pad = 10,
+	.footer = foot,
+	.press_xf = press_xf,
+	.page_xf = page_xf,
+	.rows_highlight = false,
+	.flat_cards = true,
+};
+
+/* DotMatrix: the same widgets, the same places. The renderer draws every fill as
+ * dots on one lattice (zg_set_dots) and text in the 3x5 dot type (zt_set_dot_type). */
+static struct zui_palette dot_palette(const zui_app *app) {
+	uint32_t main_c = zc_rgb(app->dot_main), acc = zc_rgb(app->accent);
+	struct zui_palette p = {
+		.bg = 0x000000ff, .surface = 0x000000ff, .surface2 = 0x000000ff,
+		.text = main_c, .text2 = zc_mix(main_c, 0x000000ff, 0.4f), .text3 = zc_mix(main_c, 0x000000ff, 0.62f),
+		.divider = 0x00000000, .track = zc_mix(main_c, 0x000000ff, 0.7f), .knob = main_c,
+		.shadow = 0x00000000, .danger = acc, .scrim = 0x000000b3,
+		.on_accent = main_c, .accent_text = acc, .bubble_caption = zc_mix(main_c, 0x000000ff, 0.4f),
+	};
+	return p;
+}
+
+const struct zui_style zui_style_dotmatrix = {
+	.name = "dotmatrix",
+	.fonts = {
+		[ZT_REGULAR] = "Selawik-Regular.ttf;Segoe UI",
+		[ZT_MEDIUM] = "Selawik-Semibold.ttf;Segoe UI Semibold",
+		[ZT_STRONG] = "Selawik-Semibold.ttf;Segoe UI Semibold",
+		[ZT_LIGHT] = "Selawik-Semilight.ttf;Segoe UI Semilight",
+	},
+	.line_spacing = 1.25f,
+	.transition_ms = 720,
+	.palette = dot_palette,
+	.m = {
+		.margin = 16, .gap = 12, .card_r = 0, .card_pad = 0, .section_gap = 10,
+		.text = 16, .heading = 25.5f, .caption = 13, .label = 13, .title = 48, .bar_title = 0,
+		.item_h = 52, .item_h2 = 66, .item_title = 21, .item_sub = 13, .icon_tile = 0,
+		.button_h = 40, .button_r = 0, .button_text = 14.5f,
+		.field_h = 44, .field_r = 0,
+		.bar_h = 108, .large_title_h = 0,
+	},
+	.header = header,
+	.page_top = page_top,
+	.card = card,
+	.divider = divider,
+	.section_label = section_label,
+	.button = button,
+	.item = item,
+	.toggle = toggle,
+	.slider = slider,
+	.progress = progress,
+	.field = field,
+	.busy = busy,
+	.toast = toast,
+	.tabs = tabs,
+	.tabs_h = 0,
+	.bubble = dot_bubble,
+	.bubble_pad = 10,
+	.footer = foot,
 	.press_xf = press_xf,
 	.page_xf = page_xf,
 	.rows_highlight = false,

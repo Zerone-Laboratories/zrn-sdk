@@ -1,7 +1,7 @@
 # zrn-sdk: design
 
 The ztOS app platform, round 1: **libzrnui** (our own UI library, drawn on the
-GPU), **zrnCoolStyle** (its default look), bindings for **C, C++, Rust and
+GPU, in Metro or DotMatrix), bindings for **C, C++, Rust and
 Python**, the **.zexec** single-file app format, the **`zrn`** CLI, and the
 store flow (moderated on Discord, built from source in CI). Written 30 October
 2026. Everything here was built and run on the laptop; nothing has run on the
@@ -12,7 +12,7 @@ phone yet (see [What is not done](#what-is-not-done)).
 1. [Decisions in one page](#decisions-in-one-page)
 2. [Why our own renderer](#why-our-own-renderer) (the comparison table)
 3. [libzrnui](#libzrnui)
-4. [zrnCoolStyle](#zrncoolstyle) and [Metro](#metro-ztretrofit)
+4. [The styles](#the-styles)
 5. [The API](#the-api)
 6. [.zexec](#zexec)
 7. [The zrn CLI](#the-zrn-cli)
@@ -29,9 +29,9 @@ phone yet (see [What is not done](#what-is-not-done)).
 | D2 | Every widget is a **signed-distance rounded rectangle or a glyph**, batched into one vertex buffer | One shader, no tessellation, no stencil; corners, borders, lines and soft shadows are exact at any scale and under 3D transforms (Metro's tilt and turnstile). A frame is a few draw calls. |
 | D3 | Text: **HarfBuzz** shapes in font units, **FreeType** rasterises each glyph once into a GPU atlas, **fontconfig** finds fallbacks | Layout is identical at every scale (laptop and phone agree); complex scripts (Sinhala, Tamil, CJK) shape correctly; no per-frame text rasterising. |
 | D4 | A **retained tree** with automatic layout (page, section, card, column, row) and one callback shape | Easier than zmc's "draw a page, return its height, register hit boxes"; bindings only pass handles and closures; nothing redraws unless something changed. |
-| D5 | **zrnCoolStyle is the default**; Metro is the second style over the same widgets; the user's choice (`ZUI_STYLE`, `zrnui_style` in the ztmetro config) wins over the app's | The brief. Styles differ in look and motion only, never in what the app writes. A DotMatrix session falls back to Metro until DotMatrix is ported (never mix). |
+| D5 | **Two styles, Metro and DotMatrix, over the same widgets; the system chooses, never the app** | They must never mix. Styles differ in look and motion only, never in what the app writes. |
 | D6 | **One C ABI**; C++ is a header-only wrapper; Rust is a hand-written `-sys` layer plus a safe crate; Python is ctypes | No bindgen, no cffi build step, no Qt. All four render identically (same library, same renders). |
-| D7 | Fonts are **bundled**: Inter (zrnCoolStyle) and Selawik (Metro, Segoe UI's open metric twin), both SIL OFL 1.1 | The look must not depend on what fonts a phone happens to have. |
+| D7 | Fonts are **bundled**: Selawik (Metro, Segoe UI's open metric twin), SIL OFL 1.1 | The look must not depend on what fonts a phone happens to have. |
 | D8 | **.zexec = `#!/usr/bin/env zrn-exec` line + a zip**, with a detached **minisign** signature | Runnable directly (the kernel's `#!`), but verified before any of it runs, with no architecture-specific stub inside every app. |
 | D9 | The store **builds from source at a pinned commit**, approved by a **Discord moderator**, signed in a **separate CI job** that never runs app code | Strangers' binaries are never accepted; a repository changing after approval changes nothing. |
 | D10 | Licence: **LGPL-2.1-or-later** for libzrnui and the bindings, so apps under any licence can link; **GPL-2.0-or-later** for the tools; **MIT** for examples and templates | Matches the code it came from. See the open question under [Round 2](#round-2): LGPL for libzrnui would let non-GPL apps link. |
@@ -64,12 +64,13 @@ libzrnui/
   src/core.c           tree, layout, touch/scroll/fling, pages and transitions, drawing a frame
   src/gfx.c            the GPU batcher (SDF shapes, glyph atlas, transforms)
   src/text.c           HarfBuzz + FreeType + fontconfig, line breaking, ellipsis
-  src/style-cool.c     zrnCoolStyle
-  src/style-metro.c    Metro (ZrnMetroCore's numbers)
-  src/icons.c          20 line icons drawn as strokes
+  src/style-metro.c    Metro (ZrnMetroCore's numbers) and DotMatrix
+  src/extras.c         pictures, long lists, tabs
+  src/dot-font.h       DotMatrix's type
+  src/icons.c          icons by name: Segoe MDL2 glyphs from the system; strokes under DotMatrix or without the font
   src/wl.c             Wayland window, EGL, input, the main loop
   src/offscreen.c      EGL surfaceless + FBO + PNG (renders without a display)
-  fonts/               Inter and Selawik, with their OFL licences
+  fonts/               Selawik, with its OFL licence
   protocol/            xdg-shell (copied from ztmetro/core)
 ```
 
@@ -81,7 +82,7 @@ boxes; arcs are short lines. Text quads sample an 8-bit coverage atlas
 (2048x2048) filled by FreeType on first use. Colours are premultiplied, so one
 blend mode covers everything. Transforms (a 4x4 matrix per row or widget) are
 applied to the corners on the CPU and the GPU does the perspective divide, so
-Metro's turnstile and tilt and zrnCoolStyle's slides use the same path. Scissor
+Metro's turnstile and tilt and the styles's slides use the same path. Scissor
 clips the list under the fixed header.
 
 **When it draws.** Only when something changed or is moving (a transition, a
@@ -92,7 +93,7 @@ caret does not blink, so a focused field costs nothing at rest.
 **Cost.** `ZUI_PERFLOG=1` prints what building and submitting a frame costs
 the CPU. Measured on the laptop (i7-3615QM, 2012) in kwin_wayland's virtual
 backend at the S9's 1440x2960 (scale 4), the settings example scrolling,
-flinging and changing pages: 1.35 ms a frame on average in zrnCoolStyle and
+flinging and changing pages: 1.35 ms a frame on average (the earlier look) and
 0.78 ms in Metro; the worst frame (17-22 ms) is the first, which rasterises
 the glyphs into the atlas. CPU side only, not the GPU's time; the phone's
 A55 cores are slower, so these say little more than "small".
@@ -110,58 +111,37 @@ and a locked queue). One app per process: fonts and glyphs are per process.
 
 **System settings read.** The accent (`accent = cobalt` in
 `~/.config/ztmetro/config`, ztmetro's 20 named colours, or `#rrggbb`), style
-(`zrnui_style = cool|metro|follow`), theme (`zrnui_theme = dark|light`), the
-session's `ZTRF_SHELL_STYLE`. Haptics and the on-screen keyboard go to the
+(`style`), the DotMatrix palette (`dotmatrix_palette`), the session's
+`ZTRF_SHELL_STYLE`. Haptics and the on-screen keyboard go to the
 shell's control pipe (`$XDG_RUNTIME_DIR/ztmetro.ctl`) exactly as ZrnMetroCore
 sends them (`haptic tap`, `osk show <bottom>`).
 
-## zrnCoolStyle
+## The styles
 
-Calm, readable, modern; dark by default (OLED), with a light theme.
+ztCoolStyle is the name of this UI system. It has two styles, **Metro** and
+**DotMatrix**, and the system chooses: the session's `ZTRF_SHELL_STYLE`, else
+`style` in `~/.config/ztmetro/config`, else Metro. An app cannot pick one, so an
+app never differs from what is around it. `ZUI_STYLE` overrides it for renders
+and tests only.
 
-![zrnCoolStyle dark, its Wi-Fi page, light, and the same two pages in Metro](docs/renders/compare.png)
+### Metro
 
-| | dark | light |
-|---|---|---|
-| page | `#0E0F12` graphite | `#F3F4F7` paper |
-| card | `#1A1C21`, no shadow | `#FFFFFF`, 10 pt soft shadow |
-| text / secondary / tertiary | `#F2F3F5` / `#9AA1AC` / `#666C77` | `#14161B` / `#5D6470` / `#9AA0AA` |
-| dividers | white 8 %, hairline, inset to the text | black 9 % |
-| accent | the system's; lifted toward white for text on dark when it is dark (cobalt stays readable) | the system's, slightly darkened for text |
+The same widgets as ZrnMetroCore draws them: black, white Segoe UI from the system (Selawik, bundled, only where it is absent), the app's name in capitals over a 48 pt lowercase title fixed at
+the top (108 pt), pivots whose next titles run grey off the edge, rectangular
+toggles, outlined buttons that fill white when pressed, round buttons with a word
+under them, Messaging's thread rows and bubbles, the tilt on press and the
+turnstile between pages. Numbers are ZrnMetroCore's.
 
-- **Type**: Inter. Page title 32 pt semibold; body 16; row titles 16 regular;
-  secondary 13.5; section labels 13.5 medium; line height 1.36.
-- **Shape**: cards 20 pt radius; buttons and switches are pills (52 pt tall
-  buttons, 52x32 switches with a 26 pt knob); fields 52 pt, 14 pt radius;
-  icon tiles 32 pt, 9 pt radius, tinted per row.
-- **Space**: 18 pt page margin, 16 pt between groups, 16 pt inside cards;
-  rows 56 pt (68 with a second line): every target is finger-sized.
-- **Header**: a large title scrolls with the page; a 56 pt bar on top fills in
-  and shows the small title once the large one has gone; a round back button
-  when the page is not the first.
-- **Motion**: a press dims a row (inset pill highlight) or sinks a button 3.5 %;
-  pages *fade through* in 380 ms (the old page is gone in the first third
-  while drifting back 4 %, the new one slides in from 16 % with its rows 14 ms
-  apart, eased with a quick start and a long settle); switches slide 180 ms;
-  the busy bar sweeps under the top bar. Nothing moves that the finger did not
-  start.
+### DotMatrix
 
-Renders (offscreen, the real GPU path, 1440x2960 at scale 4):
-`docs/renders/cool-settings.png`, `cool-settings-scrolled.png`,
-`cool-wifi.png`, `cool-light-settings.png`, `cool-light-wifi.png`; the
-transition in a real compositor: `docs/renders/kwin-cool-0..4.png`.
-
-### Metro (ztRetrofit)
-
-The same widgets as ZrnMetroCore draws them: black, white Selawik (Segoe UI's
-open twin), the app's name in capitals over a 48 pt lowercase title fixed at
-the top (108 pt), 21 pt semilight row titles with a grey or accent second
-line, rectangular toggles, outlined buttons that fill white when pressed, the
-tilt on press (14 degrees toward the finger, the far edge lifting at most
-40 pt, a 4.5 % sink) and the turnstile between pages (rows turn out round the
-left edge 128 ms each 28 ms apart, black, then the new rows swing in from
-behind in 180 ms). Numbers are ZrnMetroCore's. Renders:
-`docs/renders/metro-settings.png`, `metro-wifi.png`, `kwin-metro-1..4.png`.
+The same widgets in the same places. Everything filled is drawn by one fragment
+shader as dots 2.3 pt apart on one lattice, lit where the shape covers the cell's
+centre; text is the 3x5 dot type (`src/dot-font.h`, from `ztmetro/retro`), upper
+case, with no shaping, so scripts other than Latin come out as `?`, as in
+ztMETRO. Pictures are dots of the palette's main colour at their brightness. The
+six palettes and `dotmatrix_palette` are ztMETRO's. The accent is the palette's:
+`zui_app_set_accent` is ignored. What it lacks against the shell's own: the ghost
+field and the glow.
 
 ## The API
 
@@ -314,7 +294,7 @@ The SDK is meant to be used by coding agents as much as by people.
   These paths follow each tool's documented conventions as known in October
   2026; skill folders for Cursor, Windsurf and Gemini are the least certain.
   They live in one table (`tools/zrnlib/agents.py`).
-- The skill teaches the API in all four languages, the zrnCoolStyle rules, the
+- The skill teaches the API in all four languages, the style rules, the
   project layout, `zrn build/run/pack/verify`, and how to check visuals with
   `zrn render` and `zrn run --headless --script`.
 - `zrn new` templates ship with `AGENTS.md`; `docs/llms.txt` indexes the SDK.
@@ -393,7 +373,7 @@ In order of value:
    folders, the PipeWire socket for audio, the GNSS/IAL D-Bus names).
 4. **Migrate ztmetro apps** to libzrnui one by one (Power first: small, then
    Settings), keeping Metro as the style so nothing changes for the user until
-   they pick zrnCoolStyle; compare frame cost before and after on the phone.
+   they pick the styles; compare frame cost before and after on the phone.
    Missing for them: pivots (tabs that swipe), list pickers, menus on hold,
    round buttons, the custom overlay and DMA-BUF hooks (camera, browser).
 5. **Port Music** (`apps/music`, Python SDK + Qt) to `zrnui` in Python:
@@ -410,9 +390,6 @@ In order of value:
 
 ## What is not done
 
-- Nothing ran on the phone (a sleep bench is running on it; by instruction).
-  Performance on the Mali-G72 is inferred from the design (a few draw calls,
-  no per-frame raster) and the laptop's CPU numbers above, not measured.
 - No aarch64 build: there is no cross compiler on the laptop; every `.zexec`
   made here is x86_64 (or `any` for Python).
 - `zrn run` without `--headless` (a visible nested window on the X11 desktop)
@@ -423,5 +400,4 @@ In order of value:
 - The store Worker, Discord commands and workflows are written and
   syntax-checked, not deployed or run on GitHub; the store pipeline was run
   locally end to end (see zrn-apprepo/evidence).
-- Permissions are declared, not enforced. No images, pivots, menus or
-  virtualised lists yet. Bidirectional text is not reordered.
+- Permissions are declared, not enforced. Menus are not there yet. Bidirectional text is not reordered.

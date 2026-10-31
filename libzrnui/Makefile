@@ -11,8 +11,8 @@ LDLIBS = $(shell pkg-config --libs $(PKGS)) -lm -lpthread -ldl
 VERSION = 0.1.0
 SONAME = libzrnui.so.0
 B = build
-SRC = src/core.c src/gfx.c src/text.c src/icons.c src/style-cool.c src/style-metro.c src/wl.c \
-	src/offscreen.c protocol/xdg-shell-protocol.c
+SRC = src/core.c src/gfx.c src/text.c src/icons.c src/style-metro.c src/wl.c \
+	src/extras.c src/offscreen.c protocol/xdg-shell-protocol.c
 OBJ = $(SRC:%.c=$(B)/%.o)
 
 all: $(B)/libzrnui.so
@@ -30,7 +30,7 @@ $(B)/libzrnui.so: $(B)/libzrnui.so.$(VERSION)
 
 $(B)/zrnui.pc: Makefile
 	@mkdir -p $(B)
-	printf 'prefix=%s\nlibdir=%s\nincludedir=%s/include\n\nName: zrnui\nDescription: ztOS app toolkit (GLES2, zrnCoolStyle)\nVersion: %s\nRequires.private: wayland-client wayland-egl egl glesv2 freetype2 harfbuzz fontconfig libpng xkbcommon gbm\nLibs: -L$${libdir} -lzrnui\nCflags: -I$${includedir}\n' \
+	printf 'prefix=%s\nlibdir=%s\nincludedir=%s/include\n\nName: zrnui\nDescription: ztOS app toolkit (GLES2, Metro and DotMatrix)\nVersion: %s\nRequires.private: wayland-client wayland-egl egl glesv2 freetype2 harfbuzz fontconfig libpng xkbcommon gbm\nLibs: -L$${libdir} -lzrnui\nCflags: -I$${includedir}\n' \
 		'$(PREFIX)' '$(LIBDIR)' '$(PREFIX)' '$(VERSION)' > $@
 
 install: all $(B)/zrnui.pc

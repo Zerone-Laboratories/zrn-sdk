@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 //! libzrnui for Rust: the ztOS app toolkit. The same C library as C, C++ and
-//! Python apps (widgets drawn on the GPU, zrnCoolStyle by default), with
+//! Python apps (widgets drawn on the GPU, in the system's style, Metro or DotMatrix), with
 //! closures for callbacks and lifetimes that keep nodes from outliving their app.
 //!
 //! ```no_run
@@ -144,7 +144,7 @@ impl App {
         let t = cs(text);
         unsafe { sys::zui_toast(self.raw, t.as_ptr()) }
     }
-    /// "cool" or "metro"; the user's own choice still wins.
+    /// The style is the system's; this does not change it.
     pub fn set_style(&self, style: &str) {
         let s = cs(style);
         unsafe { sys::zui_app_set_style(self.raw, s.as_ptr()) }

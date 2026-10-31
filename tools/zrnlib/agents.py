@@ -36,7 +36,7 @@ AGENT_NAMES = list(AGENTS)
 def _instruction_text(path):
     text = (TEMPLATES / "INSTRUCTIONS.md").read_text()
     if path.endswith(".mdc"):
-        return ("---\ndescription: ztOS app rules (libzrnui, zrnCoolStyle, the zrn CLI)\n"
+        return ("---\ndescription: ztOS app rules (libzrnui, Metro and DotMatrix, the zrn CLI)\n"
                 "alwaysApply: true\n---\n\n" + text)
     if path.startswith((".windsurf/", ".agent/")):
         return "---\ntrigger: always_on\n---\n\n" + text

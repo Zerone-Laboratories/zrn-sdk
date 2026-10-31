@@ -3,6 +3,8 @@
 #include <string.h>
 #include "zui-internal.h"
 
+bool zui_icons_as_dots;
+
 struct pen { float x, y, k, w; uint32_t c; };
 
 static void L(const struct pen *p, float x0, float y0, float x1, float y1) {
@@ -25,11 +27,27 @@ static void dot(const struct pen *p, float cx, float cy, float r) {
 	zg_circle(p->x + cx * p->k, p->y + cy * p->k, r * p->k, p->c);
 }
 
+/* Segoe MDL2 Assets, the system's, by the names apps use. DotMatrix and a system
+ * without the font draw the strokes below: they fall on the lattice as dots. */
+static const struct { const char *name; uint32_t code; } MDL2[] = {
+	{ "send", 0xE724 }, { "chevron", 0xE76C }, { "back", 0xE72B }, { "check", 0xE73E }, { "plus", 0xE710 },
+	{ "close", 0xE711 }, { "more", 0xE712 }, { "search", 0xE721 }, { "wifi", 0xE701 }, { "bluetooth", 0xE702 },
+	{ "bell", 0xEA8F }, { "moon", 0xE708 }, { "sun", 0xE706 }, { "lock", 0xE72E }, { "volume", 0xE767 },
+	{ "battery", 0xE83F }, { "info", 0xE946 }, { "music", 0xE8D6 }, { "person", 0xE77B }, { "gear", 0xE713 },
+	{ "phone", 0xE717 },
+};
+
 void zui_icon(const char *name, float x, float y, float size, float stroke, uint32_t c) {
 	if (!name) return;
+	if (!zui_icons_as_dots)
+		for (size_t i = 0; i < sizeof(MDL2) / sizeof(MDL2[0]); i++)
+			if (!strcmp(MDL2[i].name, name) && zt_icon(MDL2[i].code, x, y, size, c)) return;
 	struct pen p = { x, y, size / 24.0f, stroke, c };
 	const struct pen *P = &p;
-	if (!strcmp(name, "chevron")) {
+	if (!strcmp(name, "send")) {
+		const float v[] = { 4, 5, 20, 12, 4, 19, 7, 12, 4, 5 };
+		poly(P, v, 5);
+	} else if (!strcmp(name, "chevron")) {
 		const float v[] = { 9, 5.5f, 15.5f, 12, 9, 18.5f };
 		poly(P, v, 3);
 	} else if (!strcmp(name, "back")) {

@@ -95,6 +95,26 @@ public:
 		return f;
 	}
 
+	Node footer() { return Node(zui_footer(n_)); }
+	Node tabs() { return Node(zui_tabs(n_)); }
+	Node tab(const std::string &title) { return Node(zui_tab(n_, title.c_str())); }
+	Node bubble(bool mine) { return Node(zui_bubble(n_, mine)); }
+	Node image(zui_pixmap *pix, double w = 0, double h = 0) { return Node(zui_image(n_, pix, w, h)); }
+	/* height(row) is a guess; bind(row, node) fills a row. Live as long as the list. */
+	Node list(int count, std::function<double(int)> height, std::function<void(int, Node)> bind) {
+		auto *d = new ListFns{std::move(height), std::move(bind)};
+		zui_node *l = zui_list(n_, count, &Node::list_h, &Node::list_b, d);
+		return Node(l);
+	}
+	Node &set_image(zui_pixmap *pix) { zui_set_image(n_, pix); return *this; }
+	Node &set_image_sharp(bool s) { zui_set_image_sharp(n_, s); return *this; }
+	Node &set_radius(double r) { zui_set_radius(n_, r); return *this; }
+	Node &set_monogram(const std::string &s) { zui_set_monogram(n_, s.c_str()); return *this; }
+	Node &set_badge(const std::string &s) { zui_set_badge(n_, s.c_str()); return *this; }
+	Node &set_emphasis(bool on) { zui_set_emphasis(n_, on); return *this; }
+	Node &set_align(int a) { zui_set_align(n_, a); return *this; }
+
+	Node &set_compact(bool c) { zui_page_set_compact(n_, c); return *this; }
 	/* changing it; each returns the node, so they chain */
 	Node &set_text(const std::string &s) { zui_set_text(n_, s.c_str()); return *this; }
 	Node &set_detail(const std::string &s) { zui_set_detail(n_, s.c_str()); return *this; }
@@ -121,6 +141,9 @@ public:
 	void push() { zui_push(n_); }
 
 private:
+	struct ListFns { std::function<double(int)> h; std::function<void(int, Node)> b; };
+	static double list_h(int r, void *d) { return static_cast<ListFns *>(d)->h(r); }
+	static void list_b(int r, zui_node *n, void *d) { static_cast<ListFns *>(d)->b(r, Node(n)); }
 	zui_node *n_ = nullptr;
 };
 

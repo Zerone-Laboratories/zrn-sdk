@@ -397,8 +397,6 @@ def cmd_render(args, out):
         env["ZUI_RENDER_PAGE"] = str(args.page)
     if args.style:
         env["ZUI_STYLE"] = args.style
-    if args.theme:
-        env["ZUI_THEME"] = args.theme
     if args.scroll:
         env["ZUI_RENDER_SCROLL"] = str(args.scroll)
     p = subprocess.run(app_command(proj, built), cwd=proj.root, env=run_env(built["zrnui"], env),
@@ -444,8 +442,6 @@ def cmd_run(args, out):
     env = {"ZUI_WINDOW": f"{w}x{h}"}
     if args.style:
         env["ZUI_STYLE"] = args.style
-    if args.theme:
-        env["ZUI_THEME"] = args.theme
     if args.scale:
         env["ZUI_SCALE"] = str(args.scale)
     if args.script:
@@ -707,7 +703,7 @@ def cmd_doctor(args, out):
     except ZrnError as e:
         check("libzrnui", False, e.message, e.hint)
     fonts = SDK / "libzrnui" / "fonts"
-    check("fonts", any(fonts.glob("Inter-*.ttf")) or Path("/usr/share/zrnui/fonts").is_dir(), str(fonts),
+    check("fonts", any(fonts.glob("Selawik-*.ttf")) or Path("/usr/share/zrnui/fonts").is_dir(), str(fonts),
           "the SDK checkout is missing libzrnui/fonts")
     check("crypto", sign.HAVE_CRYPTOGRAPHY, "python-cryptography" if sign.HAVE_CRYPTOGRAPHY else
           "pure-Python Ed25519 (slower)", "pacman -S python-cryptography", False)
@@ -816,8 +812,7 @@ def parser():
     p = sub.add_parser("render", parents=[common], help="draw a page into a PNG (no display needed)")
     p.add_argument("output")
     p.add_argument("--page", help="number (in the order the app makes pages) or title")
-    p.add_argument("--style", choices=("cool", "metro"))
-    p.add_argument("--theme", choices=("dark", "light"))
+    p.add_argument("--style", choices=("metro", "dotmatrix"))
     p.add_argument("--size", default="360x740", help="points, WxH (the S9 is 360x740)")
     p.add_argument("--scale", type=int, default=2, help="pixels per point (the S9 is 4)")
     p.add_argument("--scroll", type=float, help="scroll the page down this many points first")
@@ -826,8 +821,7 @@ def parser():
     p = sub.add_parser("run", parents=[common], help="run in a phone-sized Wayland window")
     p.add_argument("--headless", action="store_true", help="no window: a virtual compositor")
     p.add_argument("--script", help='steps: "wait 500; tap 180 300; type hi; snap a.png; back; quit"')
-    p.add_argument("--style", choices=("cool", "metro"))
-    p.add_argument("--theme", choices=("dark", "light"))
+    p.add_argument("--style", choices=("metro", "dotmatrix"))
     p.add_argument("--size", default="360x740")
     p.add_argument("--scale", type=int)
     p.add_argument("--timeout", type=float)

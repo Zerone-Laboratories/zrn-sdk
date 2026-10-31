@@ -278,6 +278,10 @@ static void xt_configure(void *d, struct xdg_toplevel *t, int32_t width, int32_t
 	struct zui_wl *w = d;
 	w->pending_w = width;
 	w->pending_h = height;
+	bool active = false;
+	uint32_t *st;
+	wl_array_for_each(st, states) active = active || *st == XDG_TOPLEVEL_STATE_ACTIVATED;
+	w->app->active = active;
 }
 static void xt_close(void *d, struct xdg_toplevel *t) {
 	struct zui_wl *w = d;
@@ -352,6 +356,22 @@ static void render(struct zui_wl *w) {
 	zg_end();
 	clock_gettime(CLOCK_MONOTONIC, &t1);
 	if (perf.on < 0) perf.on = getenv("ZUI_PERFLOG") != NULL;
+	{
+		/* ZUI_FRAMELOG: one line a frame, for measuring on the phone */
+		static int every = -1;
+		if (every < 0) every = getenv("ZUI_FRAMELOG") != NULL;
+		if (every) {
+			struct timespec t2;
+			clock_gettime(CLOCK_MONOTONIC, &t2);
+			static FILE *log;
+			if (!log) log = fopen(getenv("ZUI_FRAMELOG"), "a");
+			if (log) {
+				fprintf(log, "%.1f %s: frame %.1f ms, swap 0.0 ms\n", t0.tv_sec * 1e3 + t0.tv_nsec / 1e6, app->app_id,
+					(t2.tv_sec - t0.tv_sec) * 1e3 + (t2.tv_nsec - t0.tv_nsec) / 1e6);
+				fflush(log);
+			}
+		}
+	}
 	if (perf.on) {
 		double ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
 		perf.sum += ms;

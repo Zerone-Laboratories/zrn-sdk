@@ -40,8 +40,9 @@ static int freed;
 static void count_free(void *d) { freed++; }
 
 static void test_layout_and_taps(const char *style) {
+	setenv("ZUI_STYLE", style, 1);
 	zui_app *app = zui_app_new("zrn-test", "Test");
-	zui_app_set_style(app, style);
+	unsetenv("ZUI_STYLE");
 	CHECK(strcmp(zui_app_style(app), style) == 0, "style %s", style);
 	zui_node *page = zui_page(app, "Test");
 	zui_node *text = zui_text(page, "A long line of text that has to wrap at least once on a phone screen, "
@@ -86,7 +87,6 @@ static void test_layout_and_taps(const char *style) {
 
 static void test_slider_field_pages(void) {
 	zui_app *app = zui_app_new("zrn-test", "Test");
-	zui_app_set_style(app, "cool");
 	zui_node *page = zui_page(app, "One");
 	zui_node *slider = zui_slider(zui_card(page), "Volume", 0.2, on_any, NULL);
 	zui_node *field = zui_field(page, "Name", on_any, NULL);
@@ -137,8 +137,6 @@ static int read_png(const char *path, int *w, int *h, unsigned char **rgba) {
 
 static void test_offscreen(const char *dir) {
 	zui_app *app = zui_app_new("zrn-test", "Test");
-	zui_app_set_style(app, "cool");
-	zui_app_set_theme(app, "dark");
 	zui_app_set_accent(app, 0x0050ef);
 	zui_node *page = zui_page(app, "Pixels");
 	zui_node *button = zui_button(page, "Primary", NULL, NULL);
@@ -157,23 +155,63 @@ static void test_offscreen(const char *dir) {
 		CHECK(abs(p[0] - 0x00) < 6 && abs(p[1] - 0x50) < 6 && abs(p[2] - 0xef) < 6,
 			"the button is the accent (%02x%02x%02x)", p[0], p[1], p[2]);
 		unsigned char *bg = px + ((size_t)(h - 10) * w + 10) * 4;
-		CHECK(abs(bg[0] - 0x0e) < 3 && abs(bg[1] - 0x0f) < 3 && abs(bg[2] - 0x12) < 3,
-			"the page is zrnCoolStyle's dark background (%02x%02x%02x)", bg[0], bg[1], bg[2]);
+		CHECK(bg[0] < 3 && bg[1] < 3 && bg[2] < 3,
+			"the page is black (%02x%02x%02x)", bg[0], bg[1], bg[2]);
 		/* the title is light text somewhere in its row */
 		int bright = 0;
-		for (int yy = 112; yy < 190; yy++)
+		for (int yy = 40; yy < 190; yy++)
 			for (int xx = 36; xx < 300; xx++) if (px[((size_t)yy * w + xx) * 4] > 200) bright++;
-		CHECK(bright > 400, "the large title is drawn (%d light pixels)", bright);
+		CHECK(bright > 400, "the title is drawn (%d light pixels)", bright);
 		free(px);
 	}
 	zui_app_free(app);
 }
 
+static int binds;
+static double row_guess(int row, void *d) { return 50; }
+static void row_bind(int row, zui_node *n, void *d) {
+	char t[32];
+	snprintf(t, sizeof(t), "row %d", row);
+	binds++;
+	zui_node *b = zui_bubble(n, row % 2);
+	zui_text(b, t);
+}
+
+static void test_list_tabs_image(const char *dir) {
+	zui_app *app = zui_app_new("zrn-test-list", "List");
+	zui_node *page = zui_page(app, "Chats");
+	zui_node *tabs = zui_tabs(page);
+	zui_node *one = zui_tab(tabs, "One");
+	zui_tab(tabs, "Two");
+	zui_node *list = zui_list(one, 5000, row_guess, row_bind, NULL);
+	zui_node *foot = zui_footer(page);
+	zui_field(foot, "type", NULL, NULL);
+	static const uint8_t px[16] = { 255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,255,255 };
+	zui_pixmap *pix = zui_pixmap_rgba(2, 2, px);
+	zui_image(zui_tab(tabs, "Three"), pix, 100, 100);
+	CHECK(zui_tabs_current(tabs) == 0, "first tab");
+	zui_layout(app, page, 360, 740);
+	if (!getenv("ZUI_TEST_NO_GPU")) {
+		char path[512];
+		snprintf(path, sizeof(path), "%s/list.png", dir);
+		CHECK(zui_render_png(app, page, path, 360, 740, 2) == 0, "list renders");
+		CHECK(binds > 5 && binds < 60, "only the rows near the screen are made (%d)", binds);
+	}
+	int before = binds;
+	zui_list_prepend(list, 100);
+	CHECK(binds == before, "a prepend makes nothing again");
+	zui_tabs_select(tabs, 1);
+	CHECK(zui_tabs_current(tabs) == 1, "tab selected");
+	zui_pixmap_free(pix);
+	zui_app_free(app);
+}
+
 int main(int argc, char **argv) {
 	const char *dir = argc > 1 ? argv[1] : "/tmp";
-	test_layout_and_taps("cool");
+	test_layout_and_taps("dotmatrix");
 	test_layout_and_taps("metro");
 	test_slider_field_pages();
+	test_list_tabs_image(dir);
 	if (!getenv("ZUI_TEST_NO_GPU")) test_offscreen(dir);
 	printf("%d checks, %d failed\n", checks, failures);
 	return failures ? 1 : 0;

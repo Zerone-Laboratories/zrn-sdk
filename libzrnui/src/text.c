@@ -1,3 +1,5 @@
+#define _GNU_SOURCE
+#include <ctype.h>
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  * Text: HarfBuzz shapes in font units (so a layout is the same at every
@@ -101,7 +103,7 @@ static char *fc_find(const char *pattern, uint32_t cp) {
 	return out;
 }
 
-/* "Inter-Regular.ttf;Inter:weight=80": the file in libzrnui's fonts, else
+/* "Selawik-Regular.ttf;Segoe UI": Segoe if it is there, else the file in libzrnui's fonts, else
  * what fontconfig makes of the pattern */
 static int font_resolve(const char *spec) {
 	char file[256] = "", pattern[256] = "sans-serif";
@@ -111,6 +113,18 @@ static int font_resolve(const char *spec) {
 		snprintf(pattern, sizeof(pattern), "%s", semi + 1);
 	} else {
 		snprintf(file, sizeof(file), "%s", spec);
+	}
+	/* Segoe UI when the system has it (fontconfig would otherwise answer with
+	 * whatever is nearest); the bundled Selawik only when it does not */
+	if (semi && strstr(pattern, "Segoe")) {
+		char *sys = fc_find(pattern, 0);
+		const char *base = sys ? strrchr(sys, '/') : NULL;
+		if (base && strcasestr(base, "seg")) {
+			int i = face_open(sys);
+			free(sys);
+			return i;
+		}
+		free(sys);
 	}
 	if (file[0]) {
 		char path[1024];
@@ -244,7 +258,112 @@ static void layout_add(struct zt_layout *L, int *cap, const struct zt_glyph *g) 
 	L->g[L->n++] = *g;
 }
 
+/* ---- DotMatrix's type: dots, not glyphs; no shaping, no fonts ---- */
+#include "dot-font.h"
+static bool dot_type;
+#define DOT_FACE 0xffff
+void zt_set_dot_type(bool on) { dot_type = on; T.fonts_gen++; }
+
+static const char *dot_glyph(const unsigned char **p) {
+	int ch = **p;
+	if (ch >= 0x80) {
+		while (((*p)[1] & 0xc0) == 0x80) (*p)++;
+		ch = '?';
+	}
+	(*p)++;
+	if (dm_f3[ch]) return dm_f3[ch];
+	if (ch < 128 && dm_f3[toupper(ch)]) return dm_f3[toupper(ch)];
+	return dm_f3[' '];
+}
+static int dot_w(const char *g) { int w = 0; while (g[w] && g[w] != ' ') w++; return w; }
+
+static int dot_cols(const char *s, size_t len) {
+	int c = 0;
+	const unsigned char *p = (const unsigned char *)s, *e = p + len;
+	while (p < e && *p) c += dot_w(dot_glyph(&p)) + 1;
+	return c > 0 ? c - 1 : 0;
+}
+
+static void dot_add(struct zt_layout *L, int *cap, const char *s, size_t len, float pitch, float top) {
+	int c = 0;
+	const unsigned char *p = (const unsigned char *)s, *e = p + len;
+	while (p < e && *p) {
+		const char *g = dot_glyph(&p);
+		int row = 0, col = 0;
+		for (const char *q = g; *q; q++) {
+			if (*q == ' ') { row++; col = 0; continue; }
+			if (*q == 'X') {
+				struct zt_glyph d = { DOT_FACE, 0, (c + col + 0.5f) * pitch, top + (row + 0.5f) * pitch };
+				layout_add(L, cap, &d);
+			}
+			col++;
+		}
+		c += dot_w(g) + 1;
+	}
+	float w = (c > 0 ? c - 1 : 0) * pitch;
+	if (w > L->w) L->w = w;
+}
+
+static struct zt_layout *dot_layout(const char *s, float size, float max_w, int max_lines) {
+	struct zt_layout *L = calloc(1, sizeof(*L));
+	int cap = 0;
+	float p = size / 7.5f, line = size * 1.3f, pad = (line - 5 * p) / 2;
+	L->size = size;
+	L->line_h = line;
+	L->ascent = pad;
+	int lines = 0;
+	const char *rest = s;
+	if (max_w > 0 && max_lines == 1 && dot_cols(s, strlen(s)) * p > max_w) {
+		/* cut, with two dots after */
+		const unsigned char *q = (const unsigned char *)s;
+		size_t best = 0;
+		while (*q) {
+			dot_glyph(&q);
+			size_t n = (size_t)(q - (const unsigned char *)s);
+			if ((dot_cols(s, n) + 4) * p > max_w) break;
+			best = n;
+		}
+		char *b = malloc(best + 3);
+		memcpy(b, s, best);
+		memcpy(b + best, "..", 3);
+		dot_add(L, &cap, b, strlen(b), p, pad);
+		free(b);
+		lines = 1;
+	} else if (max_w <= 0) {
+		dot_add(L, &cap, s, strlen(s), p, pad);
+		lines = 1;
+	} else {
+		while (*rest) {
+			size_t n = 0;
+			const unsigned char *q = (const unsigned char *)rest;
+			const char *nl = strchr(rest, '\n');
+			while (*q && *q != '\n') {
+				const unsigned char *t = q;
+				dot_glyph(&t);
+				size_t k = (size_t)(t - (const unsigned char *)rest);
+				if (dot_cols(rest, k) * p > max_w) break;
+				n = k;
+				q = t;
+			}
+			size_t cut = n;
+			if (rest[n] && rest[n] != '\n') for (size_t k = n; k > 0; k--) if (rest[k] == ' ') { cut = k; break; }
+			if (!cut) cut = n ? n : 1;
+			if (nl && (size_t)(nl - rest) < cut) cut = (size_t)(nl - rest);
+			dot_add(L, &cap, rest, cut, p, pad + lines * line);
+			lines++;
+			rest += cut;
+			while (*rest == ' ') rest++;
+			if (*rest == '\n') rest++;
+		}
+		if (!lines) lines = 1;
+	}
+	L->lines = lines;
+	L->h = lines * line;
+	return L;
+}
+
 struct zt_layout *zt_layout_make(const char *utf8, int font, float size, float max_w, int max_lines) {
+	if (dot_type) return dot_layout(utf8 ? utf8 : "", size, max_w, max_lines);
 	struct zt_layout *L = calloc(1, sizeof(*L));
 	int cap = 0;
 	if (!utf8) utf8 = "";
@@ -341,6 +460,7 @@ void zt_layout_free(struct zt_layout *L) {
 }
 
 float zt_width(const char *utf8, int font, float size) {
+	if (dot_type) return dot_cols(utf8 ? utf8 : "", strlen(utf8 ? utf8 : "")) * size / 7.5f;
 	struct zt_layout *L = zt_layout_make(utf8, font, size, 0, 0);
 	float w = L->w;
 	zt_layout_free(L);
@@ -413,6 +533,29 @@ static const struct cached *glyph_get(int face, uint32_t gid, uint32_t px64, int
 
 static void draw_range(const struct zt_layout *L, float x, float y, uint32_t rgba, float x0, float x1);
 
+/* One glyph of the system's Segoe MDL2 Assets, its box at x, y, `size` across.
+ * false: the font is not on this system. */
+bool zt_icon(uint32_t code, float x, float y, float size, uint32_t rgba) {
+	static int face = -2;
+	if (face == -2) {
+		face = -1;
+		char *p = fc_find("Segoe MDL2 Assets", 0);
+		if (p && strcasestr(p, "segmdl")) face = face_open(p);
+		free(p);
+	}
+	if (face < 0 || !T.faces[face].ok) return false;
+	unsigned gid = FT_Get_Char_Index(T.faces[face].ft, code);
+	if (!gid) return false;
+	float scale = zui_gfx_scale();
+	const struct cached *c = glyph_get(face, gid, (uint32_t)lroundf(size * scale * 4) * 16, 0);
+	if (!c || !c->w) return true;
+	float gw = c->w / scale, gh = c->h / scale;
+	float u0 = (float)c->ax / ZG_ATLAS, v0 = (float)c->ay / ZG_ATLAS;
+	zg_glyph(roundf((x + (size - gw) / 2) * scale) / scale, roundf((y + (size - gh) / 2) * scale) / scale, gw, gh,
+		u0, v0, (float)(c->ax + c->w) / ZG_ATLAS, (float)(c->ay + c->h) / ZG_ATLAS, rgba);
+	return true;
+}
+
 void zt_draw(const struct zt_layout *L, float x, float y, uint32_t rgba) {
 	draw_range(L, x, y, rgba, -1e9f, 1e9f);
 }
@@ -423,7 +566,16 @@ void zt_draw_clipped(const struct zt_layout *L, float x, float y, uint32_t rgba,
 }
 
 static void draw_range(const struct zt_layout *L, float x, float y, uint32_t rgba, float x0, float x1) {
-	if (!L || !T.n) return;
+	if (!L) return;
+	if (dot_type) {
+		float r = L->size / 7.5f * 0.36f;
+		for (int i = 0; i < L->n; i++) {
+			if (L->g[i].x < x0 || L->g[i].x > x1) continue;
+			zg_dot(x + L->g[i].x, y + L->g[i].y, r, rgba);
+		}
+		return;
+	}
+	if (!T.n) return;
 	float scale = zui_gfx_scale();
 	bool snap = zg_xf_is_identity(zg_get_xf());
 	/* sizes in quarter pixels */

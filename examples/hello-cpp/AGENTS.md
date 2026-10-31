@@ -12,7 +12,7 @@ API and the style rules; read it before writing UI code.
 - **Describe pages, do not position things.** Put widgets in pages, sections,
   cards, columns and rows; libzrnui lays them out, scrolls them and animates
   them. There are no x/y coordinates in app code.
-- **zrnCoolStyle is the default look.** Do not hard-code colours, fonts or
+- **The system picks the style, Metro or DotMatrix.** Do not hard-code colours, fonts or
   sizes; the accent colour comes from the system.
 - **One thread for UI.** Long work (network, files, subprocesses) goes in a
   thread or a subprocess; hand results back with `post()` / `zui_post()`.
@@ -27,7 +27,7 @@ API and the style rules; read it before writing UI code.
 | check the toolchain | `zrn doctor` |
 | build | `zrn build` |
 | look at a screen (no display needed) | `zrn render --page 0 out.png` then open the PNG |
-| the same in Metro, or light | `zrn render --style metro out.png`, `--theme light` |
+| the same in DotMatrix | `zrn render --style dotmatrix out.png` |
 | a page further down | `zrn render --scroll 400 out.png` |
 | run in a phone-sized window | `zrn run` (`--headless --script "wait 500; tap 180 300; snap a.png; quit"` without a screen) |
 | package | `zrn pack` (writes `dist/*.zexec` and `.minisig`) |

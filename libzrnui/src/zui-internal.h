@@ -33,6 +33,15 @@ void zg_set_xf(const struct zg_xf *xf);	/* NULL: none */
 const struct zg_xf *zg_get_xf(void);
 void zg_set_alpha(float a);			/* multiplies everything drawn */
 float zg_get_alpha(void);
+unsigned zg_tex_new(int w, int h, const uint8_t *rgba, bool nearest);
+void zg_tex_free(unsigned tex);
+/* a texture over a rounded box; crop 0..1 of the picture's width and height, centred */
+void zg_image(unsigned tex, float x, float y, float w, float h, float r, float crop_x, float crop_y);
+/* DotMatrix: everything filled comes out as dots `pitch` points apart on one
+ * lattice (0: off); a picture as dots of that colour at its brightness */
+void zg_set_dots(float pitch, uint32_t main_rgb);
+void zg_set_dot_origin(float y);
+void zg_dot(float cx, float cy, float radius, uint32_t rgba);
 void zg_clip(float x, float y, float w, float h);	/* points; only without a transform */
 void zg_noclip(void);
 void zg_rect(float x, float y, float w, float h, float r, uint32_t rgba);
@@ -69,9 +78,12 @@ struct zt_layout {
 };
 /* what each role is in the style in use: font files or fontconfig names */
 void zt_set_fonts(const char *const files[ZT_FONTS], float line_spacing);
+/* DotMatrix's 3x5 dot type in place of all fonts (and of shaping) */
+void zt_set_dot_type(bool on);
 /* max_w <= 0: one line, no wrapping; max_lines 1 with max_w > 0: ellipsis */
 struct zt_layout *zt_layout_make(const char *utf8, int font, float size, float max_w, int max_lines);
 void zt_layout_free(struct zt_layout *layout);
+bool zt_icon(uint32_t code, float x, float y, float size, uint32_t rgba);
 void zt_draw(const struct zt_layout *layout, float x, float y, uint32_t rgba);
 void zt_draw_clipped(const struct zt_layout *layout, float x, float y, uint32_t rgba, float x0, float x1);
 float zt_width(const char *utf8, int font, float size);
@@ -94,7 +106,21 @@ void zt_slot_free(struct zt_slot *slot);
 enum zui_kind {
 	ZK_PAGE, ZK_COLUMN, ZK_ROW, ZK_CARD, ZK_SECTION_LABEL, ZK_SPACE,
 	ZK_TEXT, ZK_HEADING, ZK_CAPTION, ZK_BUTTON, ZK_ITEM, ZK_SWITCH,
-	ZK_SLIDER, ZK_PROGRESS, ZK_FIELD,
+	ZK_SLIDER, ZK_PROGRESS, ZK_FIELD, ZK_IMAGE, ZK_LIST, ZK_TABS, ZK_FOOTER, ZK_BUBBLE,
+};
+
+struct zui_pixmap { int w, h, refs; uint8_t *rgba; unsigned tex, gen; };
+
+#define ZUI_LIST_SLOTS 48
+struct zui_list_state {
+	int count, want0, want1, last_first;
+	bool asked;
+	float row_h, *y;	/* y[row], y[count] the end */
+	zui_list_height height;
+	zui_list_bind bind;
+	void *data;
+	zui_node *slot[ZUI_LIST_SLOTS];
+	int slot_row[ZUI_LIST_SLOTS];
 };
 
 /* something moving from one value to another over time */
@@ -118,7 +144,7 @@ struct zui_node {
 	int event;
 	/* the last layout, in page points */
 	float x, y, w, h;
-	struct zt_slot t[3];
+	struct zt_slot t[5];
 	struct zanim knob;	/* a switch's knob, 0 off .. 1 on */
 	struct zanim focus_anim;
 	/* a page */
@@ -126,6 +152,20 @@ struct zui_node {
 	int depth;		/* 0 for the first page */
 	zui_node *back_to;	/* the page under this one */
 	struct zt_slot title_slot[2];
+	/* a page */
+	zui_node *tabs, *footer;
+	bool stick_end, glide;
+	uint32_t glide_at;
+	float down_fix;
+	/* tabs */
+	int tab_cur, tab_prev;
+	/* pictures, lists, the rest */
+	zui_pixmap *pix;
+	bool sharp, emphasis, mine, compact, inline_hint;
+	float radius;
+	int align;
+	char *badge, *monogram;
+	struct zui_list_state *list;
 };
 
 #define ZUI_MAX_FDS 32
@@ -136,7 +176,7 @@ struct zui_timer_entry { int id; uint64_t due, every; zui_fn fn; void *data; };
 struct zui_app {
 	char *app_id, *title;
 	const struct zui_style *style;
-	bool light;
+	uint32_t dot_main;
 	uint32_t accent;	/* 0xRRGGBB */
 	unsigned style_gen;
 	zui_node *page;		/* in front */
@@ -152,7 +192,9 @@ struct zui_app {
 	uint32_t trans_start;
 	bool quit_after_trans;
 	/* the finger */
-	bool touching, dragging, scrolling_page;
+	bool touching, dragging, scrolling_page, swiping;
+	bool active;
+	bool in_footer;
 	float down_x, down_y, last_x, last_y, down_scroll;
 	uint32_t last_t;
 	zui_node *pressed, *drag_slider;
@@ -190,6 +232,21 @@ void zui_step(zui_app *app, uint32_t now);	/* flings and springs */
 const char *zui_data_dir(void);
 void zui_osk(zui_app *app, bool show);
 
+/* extras.c */
+zui_node *zui_node_new_kind(zui_node *parent, int kind);
+float zui_layout_at(zui_node *n, float x, float y, float w);
+void zui_move_children(zui_node *n, float dy);
+void zui_list_ensure(zui_node *n, uint32_t now);
+float zui_list_layout(zui_node *n, float x, float y, float w);
+void zui_list_free(zui_node *n);
+int zui_child_index(const zui_node *c);
+zui_node *zui_tab_at(zui_node *tabs, int i);
+int zui_tab_count(const zui_node *tabs);
+void zui_frame_begin(void);
+bool zui_pixmap_ready(zui_app *app, zui_pixmap *p, bool nearest);
+void zui_draw_pixmap(zui_app *app, zui_pixmap *p, float x, float y, float w, float h, float r, bool sharp, uint32_t back);
+void zui_draw_leading(zui_app *app, zui_node *n, float x, float y, float size, float r, uint32_t fg);
+
 /* run the main loop with a window (wl.c) */
 int zui_wl_run(zui_app *app);
 void zui_wl_wake(zui_app *app);
@@ -200,7 +257,7 @@ int zui_png_write(const char *path, const uint8_t *rgba, int w, int h, bool flip
 /* -------------------------------------------------------------- styles --- */
 struct zui_palette {
 	uint32_t bg, surface, surface2, text, text2, text3, divider, track, knob, shadow,
-		on_accent, accent_text, danger, scrim;
+		on_accent, accent_text, danger, scrim, bubble_caption;
 };
 struct zui_metrics {
 	float margin, gap, card_r, card_pad, section_gap;
@@ -233,6 +290,12 @@ struct zui_style {
 	void (*field)(zui_app *app, zui_node *n, uint32_t now);
 	void (*busy)(zui_app *app, uint32_t now);
 	void (*toast)(zui_app *app, const char *text, float shown);
+	/* tabs under the title; pos: where the highlight is, a tab's index or between */
+	void (*tabs)(zui_app *app, zui_node *tabs, float pos);
+	float tabs_h;
+	void (*bubble)(zui_app *app, zui_node *n);
+	float bubble_pad;
+	void (*footer)(zui_app *app, zui_node *n);
 	/* the press: a transform for the node under the finger (amount 0..1) */
 	void (*press_xf)(zui_app *app, zui_node *n, float amount, float fx, float fy, struct zg_xf *xf);
 	/* a page coming or going: t 0..1 through the change, dir 1 forward, row
@@ -243,10 +306,12 @@ struct zui_style {
 	bool rows_highlight;
 	bool flat_cards;	/* a card's rows move one by one in page changes */
 };
-extern const struct zui_style zui_style_cool, zui_style_metro;
+extern const struct zui_style zui_style_metro, zui_style_dotmatrix;
+void zui_dot_palette(uint32_t *main_rgb, uint32_t *accent_rgb);
 const struct zui_style *zui_style_find(const char *name);
 struct zui_palette zui_pal(const zui_app *app);
 /* a small picture by name, in a box `size` points across */
+extern bool zui_icons_as_dots;
 void zui_icon(const char *name, float x, float y, float size, float stroke, uint32_t rgba);
 float zui_ease_out(float t);		/* cubic */
 float zui_ease_emph(float t);		/* zrnCoolStyle's settle: quick start, long soft end */

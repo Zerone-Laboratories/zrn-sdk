@@ -1,12 +1,12 @@
 # zrn-sdk
 
-> The ztOS app SDK: libzrnui (a C UI library drawn on the GPU with GLES2, in zrnCoolStyle or Metro), bindings for C++, Rust and Python over the same C ABI, the .zexec single-file app package (a #!/usr/bin/env zrn-exec line plus a zip, with a detached minisign signature), and the `zrn` CLI. Apps are pages of sections, cards, items, switches, sliders, fields and buttons; libzrnui does layout, scrolling, touch and page transitions. Every `zrn` command accepts --json.
+> The ztOS app SDK: libzrnui (a C UI library drawn on the GPU with GLES2, in Metro or DotMatrix), bindings for C++, Rust and Python over the same C ABI, the .zexec single-file app package (a #!/usr/bin/env zrn-exec line plus a zip, with a detached minisign signature), and the `zrn` CLI. Apps are pages of sections, cards, items, switches, sliders, fields and buttons; libzrnui does layout, scrolling, touch and page transitions. Every `zrn` command accepts --json.
 
 ## Start here
 
 - [README.md](../README.md): install, first app, the commands
 - [templates/agents/SKILL.md](../templates/agents/SKILL.md): the API in four languages, style rules, how to check visuals headlessly
-- [DESIGN.md](../DESIGN.md): decisions, renderer comparison, zrnCoolStyle, .zexec spec, store flow, threat model, round 2
+- [DESIGN.md](../DESIGN.md): decisions, renderer comparison, the styles, .zexec spec, store flow, threat model, round 2
 
 ## API
 
@@ -22,7 +22,7 @@
 
 ## Tools
 
-- `zrn new NAME --lang c|cpp|rust|python`, `zrn build`, `zrn render [--page N|TITLE] [--style metro] [--theme light] [--scroll Y] out.png`
+- `zrn new NAME --lang c|cpp|rust|python`, `zrn build`, `zrn render [--page N|TITLE] [--style metro] [--scroll Y] out.png`
 - `zrn run [--headless --script "wait 500; tap X Y; type TEXT; snap out.png; back; quit"]`
 - `zrn pack`, `zrn verify FILE` (exit 0 good, 1 broken, 2 untrusted), `zrn install FILE`, `zrn submit [--send]`
 - `zrn doctor`, `zrn init-agents [--agent claude,codex|--all]`

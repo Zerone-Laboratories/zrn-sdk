@@ -1,11 +1,8 @@
 # zrn-sdk
 
 Make apps for **ztOS** in C, C++, Rust or Python. They are drawn by
-**libzrnui** on the phone's GPU in **zrnCoolStyle** (or Metro, if the user
-picks ztRetrofit), ship as one signed **`.zexec`** file, and reach people
+**libzrnui** on the phone's GPU in **Metro** or **DotMatrix**, whichever the system is set to, ship as one signed **`.zexec`** file, and reach people
 through the ztOS store, which builds them from your source.
-
-![zrnCoolStyle, light, and Metro](docs/renders/compare.png)
 
 ## Start
 
@@ -87,7 +84,7 @@ The full API, the style rules and the package format are in
 ```
 zrn render out.png                          # first page, 360x740 points at scale 2
 zrn render --page "Wi-Fi" --scroll 300 out.png
-zrn render --style metro --theme light out.png
+zrn render --style dotmatrix out.png
 zrn render --scale 4 out.png                # the S9's real 1440x2960
 zrn run --headless --script "wait 500; tap 180 170; wait 600; snap after.png; quit"
 ```

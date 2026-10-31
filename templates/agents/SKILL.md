@@ -1,6 +1,6 @@
 ---
 name: zrnui
-description: Build ztOS phone apps with libzrnui (C, C++, Rust or Python) in zrnCoolStyle, and package them as .zexec with the zrn CLI. Use when writing or changing UI in a ztOS app project (a folder with zrnapp.toml), when adding a page, list, switch, slider or text field, when building, rendering, running, packing or verifying a ztOS app, or when asked how a ztOS app should look.
+description: Build ztOS phone apps with libzrnui (C, C++, Rust or Python) in Metro and DotMatrix, and package them as .zexec with the zrn CLI. Use when writing or changing UI in a ztOS app project (a folder with zrnapp.toml), when adding a page, list, switch, slider or text field, when building, rendering, running, packing or verifying a ztOS app, or when asked how a ztOS app should look.
 ---
 
 # libzrnui and zrn
@@ -53,7 +53,7 @@ sends CHANGE per edit and SUBMIT on Enter.
 Icons: wifi, bluetooth, bell, moon, sun, lock, volume, battery, info, search,
 plus, check, close, more, back, chevron, music, person, gear, phone.
 
-## zrnCoolStyle rules
+## Style rules
 
 - Group related rows in a **section** (a heading over a rounded card). Lists
   of things are `item`s and `switch`es inside a card; dividers come by themselves.
@@ -73,7 +73,7 @@ plus, check, close, more, back, chevron, music, person, gear, phone.
 ```
 zrn build && zrn render --page 0 /tmp/p0.png          # the first page the app creates
 zrn render --page "Wi-Fi" --scroll 300 /tmp/wifi.png  # by title, scrolled
-zrn render --style metro --theme light /tmp/m.png
+zrn render --style dotmatrix /tmp/m.png
 zrn run --headless --script "wait 400; tap 180 170; wait 600; snap /tmp/after.png; quit"
 ```
 

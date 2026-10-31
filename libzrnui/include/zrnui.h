@@ -2,7 +2,7 @@
 /*
  * libzrnui: the ztOS app toolkit. One C library underneath C, C++, Rust and
  * Python apps; widgets are drawn straight on the GPU (GLES2), in a style
- * chosen at run time (zrnCoolStyle by default, Metro for ztRetrofit).
+ * the system chooses (Metro or DotMatrix); an app follows it, so they never mix.
  *
  * An app is a set of pages. A page is a column: put things in it and the
  * library lays them out, scrolls them, presses them and moves between pages.
@@ -71,13 +71,15 @@ zui_app *zui_app_new(const char *app_id, const char *title);
 int zui_run(zui_app *app, zui_node *first_page);
 void zui_quit(zui_app *app);
 void zui_app_free(zui_app *app);
-/* "cool" (zrnCoolStyle), "metro". NULL or unknown: the system's choice
- * (ZUI_STYLE, else ztRetrofit's ZTRF_SHELL_STYLE, else "cool"). */
+/* The style is the system's: ZTRF_SHELL_STYLE, else `style` in ztmetro's config,
+ * else Metro. ZUI_STYLE overrides it for looking at renders. An app cannot pick
+ * one: this only exists for tests, and only while nothing else has decided. */
 void zui_app_set_style(zui_app *app, const char *style);
 const char *zui_app_style(zui_app *app);
-/* "dark" or "light" (zrnCoolStyle; Metro is always dark) */
+/* Does nothing: both styles are black. Kept for the ABI. */
 void zui_app_set_theme(zui_app *app, const char *theme);
-/* 0xRRGGBB; by default the system's accent (~/.config/ztmetro/config) */
+/* 0xRRGGBB; by default the system's accent (~/.config/ztmetro/config).
+ * DotMatrix keeps its palette whatever is set here. */
 void zui_app_set_accent(zui_app *app, uint32_t rgb);
 uint32_t zui_app_accent(zui_app *app);
 /* The loading dots across the top, while something loads. */
@@ -117,6 +119,67 @@ zui_node *zui_progress(zui_node *parent, double value);
 /* A box to type into; on_change on every edit, ZUI_EVENT_SUBMIT on Enter. */
 zui_node *zui_field(zui_node *parent, const char *placeholder, zui_cb on_change, void *data);
 
+/* ---- pictures ---- */
+typedef struct zui_pixmap zui_pixmap;
+/* Decoded on the CPU (JPEG, PNG), from any thread: decode big ones off the UI
+ * thread and zui_post the result. max_side > 0 shrinks to about that. NULL if it
+ * is not a picture. zui_pixmap_free only on the UI thread once it has been used. */
+zui_pixmap *zui_pixmap_decode(const void *bytes, size_t size, int max_side);
+zui_pixmap *zui_pixmap_load(const char *path, int max_side);
+zui_pixmap *zui_pixmap_rgba(int w, int h, const void *rgba);
+void zui_pixmap_free(zui_pixmap *pix);	/* nodes keep their own reference */
+void zui_pixmap_size(const zui_pixmap *pix, int *w, int *h);
+/* w 0: the width there is; h 0: from the picture's shape */
+zui_node *zui_image(zui_node *parent, zui_pixmap *pix, double w, double h);
+/* on an image, or on an item as its avatar */
+void zui_set_image(zui_node *node, zui_pixmap *pix);
+/* no smoothing, on whole pixels: a QR code */
+void zui_set_image_sharp(zui_node *node, bool sharp);
+void zui_set_radius(zui_node *node, double radius);
+/* an item without a picture: this letter in a tinted avatar */
+void zui_set_monogram(zui_node *node, const char *text);
+/* a small count at an item's end */
+void zui_set_badge(zui_node *node, const char *text);
+/* an item's title stands out (unread) */
+void zui_set_emphasis(zui_node *node, bool on);
+/* text: 0 start, 1 end, 2 centre */
+void zui_set_align(zui_node *node, int align);
+
+/* ---- long lists ---- */
+/* Thousands of rows of differing heights. bind fills `row_node` (a column) when
+ * the row comes near the screen; height is only a guess, corrected once the row
+ * is made. Must be the last thing in its page or tab. The handler gets
+ * ZUI_EVENT_CHANGE near the start: a chance to zui_list_prepend older rows. */
+typedef double (*zui_list_height)(int row, void *data);
+typedef void (*zui_list_bind)(int row, zui_node *row_node, void *data);
+zui_node *zui_list(zui_node *parent, int count, zui_list_height height, zui_list_bind bind, void *data);
+void zui_list_set_row_height(zui_node *list, double height);	/* when height is NULL */
+void zui_list_set_count(zui_node *list, int count);	/* everything anew */
+void zui_list_append(zui_node *list, int more);
+void zui_list_prepend(zui_node *list, int more);	/* what is on the screen stays there */
+void zui_list_refresh(zui_node *list, int row);
+void zui_list_allow_more(zui_node *list);	/* ask again near the start */
+/* show the end of a page and stay there as it grows, until the finger moves it */
+void zui_page_scroll_end(zui_node *page, bool glide);
+bool zui_page_at_end(zui_node *page, double within);
+
+/* ---- tabs and the bottom bar ---- */
+/* Tabs under the page's title; they swipe. A tab is a column with its own scroll
+ * place. The handler of the tabs gets ZUI_EVENT_CHANGE when the tab changes. */
+zui_node *zui_tabs(zui_node *page);
+zui_node *zui_tab(zui_node *tabs, const char *title);
+void zui_tabs_select(zui_node *tabs, int index);
+int zui_tabs_current(zui_node *tabs);
+/* A row fixed at the bottom of a page, over its list; a field in it asks the
+ * shell to lift the window with the keyboard. */
+zui_node *zui_footer(zui_node *page);
+/* A speech bubble in a list: as wide as what is in it, on the end if `mine`. */
+zui_node *zui_bubble(zui_node *parent, bool mine);
+/* A page's title as given and smaller, with a line under it (a person's name) */
+void zui_page_set_compact(zui_node *page, bool compact);
+/* the window is in front of the others */
+bool zui_app_active(zui_app *app);
+
 /* ---- changing things ---- */
 void zui_set_text(zui_node *node, const char *text);	/* label, title, field text */
 const char *zui_get_text(zui_node *node);
@@ -134,7 +197,7 @@ void zui_set_flex(zui_node *node, double flex);	/* share of a row's spare width 
  * "moon", "sun", "lock", "volume", "battery", "info", "search", "plus",
  * "check", "close", "more", "back", "chevron", "music", "person". */
 void zui_set_icon(zui_node *node, const char *icon);
-/* a tint for an item's icon tile (zrnCoolStyle), 0xRRGGBB; 0: the accent */
+/* a tint for an item's tile, 0xRRGGBB; 0: the accent */
 void zui_set_tint(zui_node *node, uint32_t rgb);
 /* What the node calls; free_data(data) runs when the node goes away. */
 void zui_set_handler(zui_node *node, zui_cb cb, void *data, zui_free_fn free_data);

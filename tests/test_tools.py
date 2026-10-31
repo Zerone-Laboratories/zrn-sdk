@@ -181,7 +181,7 @@ class Cli(unittest.TestCase):
 class Binding(unittest.TestCase):
     def test_python_callbacks(self):
         import zrnui
-        app = zrnui.App("zrn-test-py", "Test", style="cool")
+        app = zrnui.App("zrn-test-py", "Test", style="metro")
         page = app.page("Test")
         seen = []
         b = page.button("Tap", lambda: seen.append("tap"))

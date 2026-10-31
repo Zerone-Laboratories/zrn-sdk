@@ -24,11 +24,8 @@ examples: all
 R = docs/renders
 renders: all
 	@mkdir -p $(R)
-	$(ZRN) -C examples/settings-c render --scale 4 $(R)/cool-settings.png
-	$(ZRN) -C examples/settings-c render --scale 4 --scroll 420 $(R)/cool-settings-scrolled.png
-	$(ZRN) -C examples/settings-c render --scale 4 --page Wi-Fi $(R)/cool-wifi.png
-	$(ZRN) -C examples/settings-c render --scale 4 --theme light $(R)/cool-light-settings.png
-	$(ZRN) -C examples/settings-c render --scale 4 --theme light --page Wi-Fi $(R)/cool-light-wifi.png
+	$(ZRN) -C examples/settings-c render --scale 4 --style dotmatrix $(R)/dotmatrix-settings.png
+	$(ZRN) -C examples/settings-c render --scale 4 --style dotmatrix --page Wi-Fi $(R)/dotmatrix-wifi.png
 	$(ZRN) -C examples/settings-c render --scale 4 --style metro $(R)/metro-settings.png
 	$(ZRN) -C examples/settings-c render --scale 4 --style metro --page Wi-Fi $(R)/metro-wifi.png
 	$(ZRN) -C examples/hello-c render --scale 2 $(R)/hello-c.png
