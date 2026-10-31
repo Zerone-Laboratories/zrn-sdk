@@ -54,7 +54,10 @@ def launch(file, argv):
         rec.write_text(sha + "\n")
     with zexec.open_zexec(path) as z:
         m = m or zexec.read_manifest(z)
-    from .store import read_revoked
+    from .store import read_revoked, too_old
+    old = too_old(m.get("min_ztos"))
+    if old:
+        return _fail(m, "Cannot start", f"{m.get('name')}: {old}. Update ztOS.", 126)
     gone = read_revoked().get(sha)
     if gone:
         return _fail(m, "Disabled by the store", f"this version was revoked: {gone.get('reason') or 'no reason given'}", 126)
@@ -87,6 +90,17 @@ def launch(file, argv):
         cmd = [sys.executable, "-s", entry, *argv]
     else:
         cmd = [entry, *argv]
+    if m["runtime"] != "python3":
+        # the loader would only say so on stderr, and the window would just never come
+        import subprocess
+        try:
+            out = subprocess.run(["ldd", entry], capture_output=True, text=True, env=env, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        missing = [l.split()[0] for l in out.splitlines() if "not found" in l]
+        if missing:
+            return _fail(m, "Cannot start", f"{m.get('name')} needs {', '.join(missing)}, which this ztOS does not have. "
+                         "Its build does not match this system.", 127)
     if not sys.stderr.isatty() and not os.environ.get("ZRN_EXEC_NO_LOG"):
         logdir = state_home()
         logdir.mkdir(parents=True, exist_ok=True)

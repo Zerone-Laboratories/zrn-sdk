@@ -22,6 +22,29 @@ DEFAULT_INDEX = "https://raw.githubusercontent.com/Zerone-Laboratories/ztOS-appr
 SYSTEM_KEY = "/usr/share/zrn/trusted-keys/store.pub"
 
 
+def ztos_version():
+    """This system's ztOS version as numbers, or None when it is not ztOS."""
+    try:
+        text = Path(os.environ.get("ZRN_OS_RELEASE") or "/etc/os-release").read_text()
+    except OSError:
+        return None
+    if not re.search(r'^ID="?ztos"?$', text, re.M):
+        return None
+    m = re.search(r'^VERSION_ID="?(\d+(?:\.\d+)*)', text, re.M)
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def too_old(min_ztos):
+    """Why this system cannot run an app needing min_ztos, or None."""
+    have = ztos_version()
+    if have is None or not min_ztos or os.environ.get("ZRN_IGNORE_MIN_ZTOS"):
+        return None
+    want = tuple(int(x) for x in re.findall(r"\d+", str(min_ztos).split("-")[0]))
+    if have >= want:
+        return None
+    return f"it needs ztOS {min_ztos} or later, this is {'.'.join(map(str, have))}"
+
+
 def _home(var, rel):
     return Path(os.environ.get(var) or Path.home() / rel)
 
@@ -193,6 +216,9 @@ def fetch_package(app_id, arch, dest_dir):
     rel = _latest(app, arch, revoked)
     if not rel:
         raise ZrnError("no-release", f"{app_id} has no usable release for {arch}", "")
+    old = too_old(rel.get("min_ztos"))
+    if old:
+        raise ZrnError("ztos-too-old", f"{app_id}: {old}", "update ztOS first")
     try:
         data = _fetch(rel["url"])
         sig = _fetch(rel["sig_url"], 4096).decode()

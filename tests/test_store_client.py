@@ -25,6 +25,9 @@ env = dict(os.environ, HOME=str(home), ZRN_STORE_INDEX=str(idx), ZRN_STORE_KEY=s
            XDG_CONFIG_HOME=str(home / ".c"), XDG_CACHE_HOME=str(home / ".k"), XDG_DATA_HOME=str(home / ".d"),
            XDG_STATE_HOME=str(home / ".s"))
 env.pop("XDG_RUNTIME_DIR", None)
+osr = t / "os-release"
+osr.write_text('ID=ztos\nVERSION_ID="0.2.1-BETA-1.1"\n')
+env["ZRN_OS_RELEASE"] = str(osr)
 def z(*a):
     p = subprocess.run(ZRN + [*a, "--json"], capture_output=True, text=True, env=env)
     return p.returncode, json.loads(p.stdout or "{}")
@@ -63,6 +66,11 @@ check(rc == 0 and o["apps"][0]["id"] == m["id"] and not o["apps"][0]["installed"
 rc, o = z("store", "install", m["id"])
 check(rc == 0, f"installed: {o.get('error')}")
 check(z("store", "list")[1]["apps"][0]["installed"] == m["version"], "listed as installed")
+app0 = home / ".d/zrn/apps" / m["id"] / f"{m['id']}.zexec"
+osr.write_text('ID=ztos\nVERSION_ID="0.2.0-BETA-1"\n')
+p = subprocess.run([sys.executable, "-I", str(SDK / "tools/zrn-exec"), str(app0)], capture_output=True, text=True, env=env)
+check(p.returncode == 126 and "0.2.1" in p.stderr, "zrn-exec refuses it on an older ztOS and says why")
+osr.write_text('ID=ztos\nVERSION_ID="0.2.1-BETA-1.1"\n')
 publish("2026-01-01T00:00:00Z")
 rc, o = z("store", "refresh")
 check(rc != 0 and o["error"]["code"] == "old-index", "an older index is refused")

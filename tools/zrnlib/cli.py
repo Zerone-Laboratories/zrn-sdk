@@ -260,7 +260,7 @@ def manifest_for(proj, arch, bundled=False):
         "author": a.get("author", ""), "licence": a.get("licence", a.get("license", "")),
         "homepage": a.get("homepage", ""), "arch": arch, "runtime": proj.runtime,
         "entry": ("app/" + proj.build.get("entry", "main.py")) if proj.runtime == "python3" else f"bin/{proj.id}",
-        "zrnui": "0.1", "min_ztos": a.get("min_ztos", "0.1"),
+        "zrnui": "0.1", "min_ztos": a.get("min_ztos", "0.2.1"),
         "permissions": a.get("permissions", []), "categories": a.get("categories", []),
         "built": {"by": f"zrn {VERSION}", "lang": proj.lang},
     }
