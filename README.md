@@ -1,5 +1,7 @@
 # zrn-sdk
 
+**Requires ztOS BETA-1.1 or later (version 0.2.1-BETA-1.1).** ztOS applications do not run on earlier versions.
+
 Make apps for **ztOS** in C, C++, Rust or Python. They are drawn by
 **libzrnui** on the phone's GPU in **Metro** or **DotMatrix**, whichever the system is set to, ship as one signed **`.zexec`** file, and reach people
 through the ztOS store, which builds them from your source.
