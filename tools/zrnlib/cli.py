@@ -775,6 +775,25 @@ def cmd_submit(args, out):
            f"sent: {proj.id} {proj.app['version']} at {commit[:12]}; moderators review it on Discord")
 
 
+def cmd_store(args, out):
+    """The ztOS store on this phone: only the store's key counts here."""
+    from . import store
+    if args.action == "refresh":
+        r = store.refresh()
+        result(out, {"command": "store", **r}, f"index: {r['index']}; disabled: {', '.join(r['disabled']) or 'nothing'}")
+    elif args.action == "list":
+        r = store.listing(host_arch())
+        result(out, {"command": "store", **r}, "\n".join(f"{a['id']} {a['version']} {a['installed'] or '-'}" for a in r["apps"]) or "nothing listed")
+    else:
+        if not args.id:
+            raise ZrnError("usage", "zrn store install needs an app id", "`zrn store list` shows them", exit_code=3)
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = store.fetch_package(args.id, host_arch(), d)
+            args.file, args.key = str(path), [os.environ.get("ZRN_STORE_KEY") or store.SYSTEM_KEY]
+            return cmd_install(args, out)
+
+
 def cmd_exec(args, out):
     from .launcher import launch
     return launch(args.file, args.args)
@@ -846,6 +865,11 @@ def parser():
     p.add_argument("file")
     p.add_argument("--key", action="append", help="also trust this public key")
     p.set_defaults(fn=cmd_install)
+
+    p = sub.add_parser("store", parents=[common], help="the ztOS store: refresh, list, install ID")
+    p.add_argument("action", choices=("refresh", "list", "install"))
+    p.add_argument("id", nargs="?")
+    p.set_defaults(fn=cmd_store)
 
     p = sub.add_parser("uninstall", parents=[common], help="remove an installed app")
     p.add_argument("id")

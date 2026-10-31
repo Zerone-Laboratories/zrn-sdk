@@ -113,6 +113,12 @@ for your current commit and `zrn submit --send` sends it. Moderators review it
 on the ztOS Mobile Discord; the store builds that exact commit, signs it and
 lists it. See the store's CONTRIBUTING.md.
 
+## The store on a phone
+
+`zrn store refresh`, `zrn store list` and `zrn store install ID` read the signed
+index, trusting only the store's key (`/usr/share/zrn/trusted-keys/store.pub`).
+ztOS's App Store uses them. `make install PREFIX=/usr` installs everything needed.
+
 ## This repository
 
 | | |

@@ -15,6 +15,7 @@ $(TESTBIN)/test_core: tests/test_core.c all
 check: $(TESTBIN)/test_core
 	EGL_LOG_LEVEL=fatal $(TESTBIN)/test_core $(TESTBIN)
 	python3 -I tests/test_tools.py
+	python3 -I tests/test_store_client.py
 	cd rust && cargo test --offline --quiet
 	c++ -std=c++17 -fsyntax-only -Wall -Wextra -Ilibzrnui/include examples/hello-cpp/main.cpp
 
@@ -34,8 +35,21 @@ renders: all
 	$(ZRN) -C examples/hello-rust render --scale 2 $(R)/hello-rust.png
 	$(ZRN) -C examples/hello-c render --scale 2 --style metro $(R)/hello-c-metro.png
 
+# Everything a phone needs to run .zexec apps: libzrnui (library, pkg-config,
+# headers, share/zrnui), and the tools in lib/zrn-sdk with bin/zrn and bin/zrn-exec.
+PREFIX ?= /usr/local
+install:
+	$(MAKE) -C libzrnui -j4 PREFIX=$(PREFIX)
+	$(MAKE) -C libzrnui install PREFIX=$(PREFIX) DESTDIR=$(DESTDIR)
+	install -d $(DESTDIR)$(PREFIX)/lib/zrn-sdk/tools/zrnlib $(DESTDIR)$(PREFIX)/bin
+	install -m755 tools/zrn tools/zrn-exec $(DESTDIR)$(PREFIX)/lib/zrn-sdk/tools/
+	install -m644 tools/zrnlib/*.py $(DESTDIR)$(PREFIX)/lib/zrn-sdk/tools/zrnlib/
+	cp -r templates $(DESTDIR)$(PREFIX)/lib/zrn-sdk/
+	ln -sf ../lib/zrn-sdk/tools/zrn $(DESTDIR)$(PREFIX)/bin/zrn
+	ln -sf ../lib/zrn-sdk/tools/zrn-exec $(DESTDIR)$(PREFIX)/bin/zrn-exec
+
 clean:
 	$(MAKE) -C libzrnui clean
 	rm -rf build
 
-.PHONY: all check examples renders clean
+.PHONY: all check examples renders clean install

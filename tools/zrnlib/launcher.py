@@ -54,6 +54,10 @@ def launch(file, argv):
         rec.write_text(sha + "\n")
     with zexec.open_zexec(path) as z:
         m = m or zexec.read_manifest(z)
+    from .store import read_revoked
+    gone = read_revoked().get(sha)
+    if gone:
+        return _fail(m, "Disabled by the store", f"this version was revoked: {gone.get('reason') or 'no reason given'}", 126)
     if m["arch"] not in ("any", host_arch()):
         return _fail(m, "Cannot start", f"built for {m['arch']}, this phone is {host_arch()}", 126)
     root = cache_home() / "apps" / m["id"] / sha[:32]
