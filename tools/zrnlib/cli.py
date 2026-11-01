@@ -262,6 +262,7 @@ def manifest_for(proj, arch, bundled=False):
         "entry": ("app/" + proj.build.get("entry", "main.py")) if proj.runtime == "python3" else f"bin/{proj.id}",
         "zrnui": "0.1", "min_ztos": a.get("min_ztos", "0.2.1"),
         "permissions": a.get("permissions", []), "categories": a.get("categories", []),
+        "data_dirs": a.get("data_dirs", []),
         "built": {"by": f"zrn {VERSION}", "lang": proj.lang},
     }
     icon = a.get("icon")
@@ -631,21 +632,90 @@ def cmd_install(args, out):
            f"installed {m['id']} {m['version']} -> {dest}\n  app list: {desktop}")
 
 
+def stop_app(app_id):
+    """Everything running from this app's unpacked package. Returns how many."""
+    import signal, time
+    root = str(cache_home() / "apps" / app_id) + "/"
+    pids = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        try:
+            if os.readlink(f"/proc/{name}/exe").startswith(root):
+                pids.append(int(name))
+        except OSError:
+            pass
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    for _ in range(20):
+        if not any(Path(f"/proc/{p}").exists() for p in pids):
+            break
+        time.sleep(0.1)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return len(pids)
+
+
+# Folders shared by the system or by every app. Removal never touches these, whatever
+# a package's manifest says.
+RESERVED_DATA_NAMES = {"zrn", "applications", "icons", "mime", "fonts", "systemd", "ztmetro", "autostart",
+                       "pulse", "pipewire", "dconf", "ssh", "gnupg", "keyrings", "waydroid", "Trash"}
+
+
+def app_data_paths(app_id, extra=()):
+    """What an app keeps: by its id, and the folder names its manifest declares."""
+    names = [app_id]
+    for n in extra:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", str(n)) and n not in RESERVED_DATA_NAMES:
+            names.append(n)
+    home = Path.home()
+    roots = [data_home(),
+             Path(os.environ.get("XDG_STATE_HOME") or home / ".local" / "state"),
+             Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config"),
+             Path(os.environ.get("XDG_CACHE_HOME") or home / ".cache")]
+    paths = [root / n for n in names for root in roots]
+    paths += [cache_home() / "apps" / app_id, state_home() / f"{app_id}.log", state_home() / f"{app_id}.log.1"]
+    return paths
+
+
 def cmd_uninstall(args, out):
     app_id = args.id
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", app_id) or app_id in RESERVED_DATA_NAMES:
+        raise ZrnError("bad-id", f"{app_id} is not an app id", "see zrn list")
+    pkg = data_home() / "zrn" / "apps" / app_id / f"{app_id}.zexec"
+    declared = []
+    if pkg.exists():
+        try:
+            with zexec.open_zexec(str(pkg)) as z:
+                declared = zexec.read_manifest(z).get("data_dirs") or []
+        except (OSError, ZrnError, ValueError, KeyError):
+            pass
+    stopped = stop_app(app_id)
     removed = []
-    for p in [data_home() / "zrn" / "apps" / app_id, data_home() / "applications" / f"{app_id}.desktop",
-              *(data_home() / "icons" / "hicolor").glob(f"*/apps/{app_id}.*")]:
-        if p.is_dir():
+    targets = [data_home() / "zrn" / "apps" / app_id, data_home() / "applications" / f"{app_id}.desktop",
+               *(data_home() / "icons" / "hicolor").glob(f"*/apps/{app_id}.*")]
+    if not getattr(args, "keep_data", False):
+        targets += app_data_paths(app_id, declared)
+    else:
+        targets += [cache_home() / "apps" / app_id]
+    for p in targets:
+        if p.is_dir() and not p.is_symlink():
             shutil.rmtree(p)
             removed.append(str(p))
-        elif p.exists():
+        elif p.exists() or p.is_symlink():
             p.unlink()
             removed.append(str(p))
     if not removed:
         raise ZrnError("not-installed", f"{app_id} is not installed for this user", "see ~/.local/share/zrn/apps")
     tell_shell("apps")
-    result(out, {"command": "uninstall", "id": app_id, "removed": removed}, f"removed {app_id}")
+    result(out, {"command": "uninstall", "id": app_id, "removed": removed, "stopped": stopped,
+                 "data_kept": bool(getattr(args, "keep_data", False))}, f"removed {app_id}")
 
 
 def cmd_keygen(args, out):
@@ -873,6 +943,7 @@ def parser():
 
     p = sub.add_parser("uninstall", parents=[common], help="remove an installed app")
     p.add_argument("id")
+    p.add_argument("--keep-data", action="store_true", help="leave what the app stored")
     p.set_defaults(fn=cmd_uninstall)
 
     p = sub.add_parser("keygen", parents=[common], help="make a signing key")

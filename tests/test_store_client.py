@@ -84,4 +84,17 @@ p = subprocess.run([sys.executable, "-I", str(SDK / "tools/zrn-exec"), str(app)]
 check(p.returncode != 0 and "test reason" in p.stderr, "zrn-exec refuses it and says why")
 rc, o = z("store", "install", m["id"])
 check(rc != 0, "a revoked release cannot be installed again")
+# removal: a throwaway app only
+aid = m["id"]
+os.environ.update(env)
+for base in (home / ".d" / aid, home / ".s" / aid, home / ".c" / aid, home / ".k" / aid):
+    base.mkdir(parents=True, exist_ok=True); (base / "x").write_text("x")
+osr.write_text('ID=ztos\nVERSION_ID="0.2.1-BETA-1.1"\n')
+keep = t / "keep"; keep.mkdir(); (home / ".d" / "other").mkdir(); (home / ".d" / "other" / "y").write_text("y")
+rc, o = z("uninstall", aid)
+check(rc == 0, f"uninstall {o.get('error')}")
+gone = all(not (home / d / aid).exists() for d in (".d", ".s", ".c", ".k"))
+check(gone, "its data is deleted from all four places")
+check((home / ".d" / "other" / "y").exists(), "another app's data is left alone")
+check(not (home / ".d/zrn/apps" / aid).exists(), "its package is gone")
 sys.exit(1 if fails else 0)

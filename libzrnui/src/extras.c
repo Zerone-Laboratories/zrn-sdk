@@ -471,14 +471,16 @@ void zui_list_draw(zui_app *app, zui_node *n, const struct zg_xf *base, uint32_t
 		k++;
 		/* a tab arriving: its rows swivel in, one after another */
 		if (tabs && tabs->swivel_at && !role) {
-			float u = ((float)(int32_t)(now - tabs->swivel_at) - (k - 1) * 12.0f) / 300.0f;
-			if (u < 1) {
-				u = u < 0 ? 0 : u;
-				float e = zui_ease_emph(u);
-				zg_xf_rotate_x(&rx, -45 * (1 - e), c->y - rounded + c->h / 2);
-				al *= u < 0.05f ? 0 : e;
+			/* a tab arriving is the second half of a page turn: its rows turn in
+			 * round the left edge, one after another (the style's turnstile) */
+			float tm = (float)app->style->transition_ms;
+			float ms = (float)(int32_t)(now - tabs->swivel_at) + tm * 0.46f;
+			float u = ms / tm;
+			if ((int32_t)(now - tabs->swivel_at) < 800) {
+				app->style->page_xf(app, u > 1 ? 1 : u, 1, true, k, 12, &rx, &al);
 				app->dirty = true;
 			}
+			if (al <= 0.002f) continue;
 		}
 		bool running = false;
 		float arrive = c->arrive.ms ? zanim_value(&c->arrive, now, &running) : 1;
@@ -646,7 +648,7 @@ void zui_tabs_step(zui_node *tabs, int dir) {
 		app->fling = false;
 		app->laid_out = false;
 		off -= (float)dir;
-		tabs->swivel_at = now + 90;
+		tabs->swivel_at = now;
 		zui_fire(tabs, ZUI_EVENT_CHANGE);
 	}
 	tabs->knob.from = off;

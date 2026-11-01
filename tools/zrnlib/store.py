@@ -148,8 +148,8 @@ def refresh():
         if e.code == 404:
             return {"index": "none", "disabled": [], "note": "the store has published nothing yet"}
         raise ZrnError("no-index", f"the store answered {e.code}", "try again later")
-    except (OSError, urllib.error.URLError) as e:
-        raise ZrnError("no-index", f"could not reach the store: {e}", "check the network")
+    except (OSError, urllib.error.URLError):
+        raise ZrnError("no-internet", "No internet connection.", "connect, then check the store again")
     index = _verified_index(raw, sig)
     held = _read_cache()
     if held and str(index.get("generated", "")) < str(held.get("generated", "")):
@@ -222,8 +222,8 @@ def fetch_package(app_id, arch, dest_dir):
     try:
         data = _fetch(rel["url"])
         sig = _fetch(rel["sig_url"], 4096).decode()
-    except (OSError, urllib.error.URLError) as e:
-        raise ZrnError("download-failed", f"could not download {app_id}: {e}", "check the network")
+    except (OSError, urllib.error.URLError):
+        raise ZrnError("no-internet", "No internet connection.", "connect, then try again")
     sha = hashlib.sha256(data).hexdigest()
     if sha != rel["sha256"]:
         raise ZrnError("bad-package", f"{app_id}: the download differs from the store's index", "it was not installed")
