@@ -28,6 +28,7 @@
 #include "../third_party/stb_image.h"
 #pragma GCC diagnostic pop
 
+#include <pthread.h>
 #include <stdio.h>
 #include "zui-internal.h"
 
@@ -101,7 +102,7 @@ ZUI_EXPORT zui_pixmap *zui_pixmap_rgba(int w, int h, const void *rgba) {
 
 ZUI_EXPORT void zui_pixmap_free(zui_pixmap *p) {
 	if (!p || --p->refs > 0) return;
-	if (p->tex && p->gen == zg_generation()) zg_tex_free(p->tex);
+	if (p->tex && p->gen == zg_main_generation()) zg_tex_free(p->tex);
 	free(p->rgba);
 	free(p);
 }
@@ -115,18 +116,19 @@ ZUI_EXPORT void zui_pixmap_size(const zui_pixmap *p, int *w, int *h) {
  * instead of one frame arriving late. */
 #define UPLOAD_BUDGET (1024 * 1024)
 static long frame_uploaded;
+static __thread bool on_row_thread;
 void zui_frame_begin(void) { frame_uploaded = 0; }
 
 bool zui_pixmap_ready(zui_app *app, zui_pixmap *p, bool nearest) {
-	if (p->tex && p->gen == zg_generation()) return true;
+	if (p->tex && p->gen == zg_main_generation()) return true;
 	long cost = (long)p->w * p->h;
-	if (frame_uploaded > 0 && frame_uploaded + cost > UPLOAD_BUDGET) {
+	if (!on_row_thread && frame_uploaded > 0 && frame_uploaded + cost > UPLOAD_BUDGET) {
 		app->dirty = true;	/* next frame */
 		return false;
 	}
 	frame_uploaded += cost;
 	p->tex = zg_tex_new(p->w, p->h, p->rgba, nearest);
-	p->gen = zg_generation();
+	p->gen = zg_main_generation();
 	return true;
 }
 
@@ -215,10 +217,12 @@ ZUI_EXPORT zui_node *zui_list(zui_node *parent, int count, zui_list_height heigh
 ZUI_EXPORT void zui_list_set_row_height(zui_node *n, double h) { n->list->row_h = (float)h; rebuild_prefix(n->list); n->app->laid_out = false; }
 
 static void slot_drop(zui_node *list, int i) {
+	zui_lock();
 	struct zui_list_state *L = list->list;
 	if (L->slot[i]) zui_destroy(L->slot[i]);
 	L->slot[i] = NULL;
 	L->slot_row[i] = -1;
+	zui_unlock();
 }
 
 void zui_list_free(zui_node *n) {
@@ -271,18 +275,120 @@ static void bind_row(zui_node *n, int row) {
 	if (at < 0) return;
 	if (L->slot[at]) slot_drop(n, at);
 	zui_app *app = n->app;
-	bool was = app->laid_out;
+	bool was = app->laid_out, dirty = app->dirty;
 	zui_node *s = zui_column(n);
 	L->slot[at] = s;
 	L->slot_row[at] = row;
 	if (L->bind) L->bind(row, s, L->data);
 	if (row >= L->arrive_from && L->arrive_from > 0) zanim_go(&s->arrive, 1, 260, zui_now()), s->arrive.from = 0;
-	float h = zui_layout_at(s, n->x, n->y + L->y[row], n->w);
-	app->laid_out = was;
-	changed_height(n, row, h - (L->y[row + 1] - L->y[row]));
+	(void)zui_layout_at(s, n->x, n->y + L->y[row], n->w);
+	s->h = s->h;
+	if (on_row_thread) { app->laid_out = was; app->dirty = dirty; } else app->laid_out = was;
 }
 
-/* the rows in sight are made now, and one more ahead each frame */
+/* ---- rows painted on a thread, then only moved ----
+ * As ZrnMetroCore does: the row about to arrive is made and painted away from the
+ * frame, and a frame only moves textures. The thread has its own GL context sharing
+ * textures, its own batcher, program, atlas and glyph cache; the tree and the fonts
+ * are under one lock, which a frame takes only if a row it needs is not ready. */
+#define PAINT_MAX_PT 1400	/* taller than this is drawn live */
+static pthread_mutex_t big_lock;
+static pthread_once_t big_once = PTHREAD_ONCE_INIT;
+static pthread_mutex_t q_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t q_wake = PTHREAD_COND_INITIALIZER;
+static bool rows_on;
+static struct { zui_node *list; int r0, r1, dir; bool set; } want;
+static zui_app *rows_app;
+static void big_init(void) {
+	pthread_mutexattr_t a;
+	pthread_mutexattr_init(&a);
+	pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+	pthread_mutex_init(&big_lock, &a);
+	pthread_mutexattr_destroy(&a);
+}
+void zui_lock(void) { pthread_once(&big_once, big_init); pthread_mutex_lock(&big_lock); }
+void zui_unlock(void) { pthread_mutex_unlock(&big_lock); }
+ZUI_EXPORT void zui_list_lock(zui_app *app, bool lock) { (void)app; if (lock) zui_lock(); else zui_unlock(); }
+bool zui_rows_running(void) { return rows_on; }
+
+static zui_node *slot_of(struct zui_list_state *L, int row) {
+	for (int i = 0; i < ZUI_LIST_SLOTS; i++)
+		if (L->slot[i] && L->slot_row[i] == row) return L->slot[i];
+	return NULL;
+}
+
+static void paint_slot(zui_node *n, zui_node *s) {
+	zui_app *app = n->app;
+	float scale = app->paint_scale > 0 ? app->paint_scale : 1;
+	int tw = (int)lroundf(app->width * scale), th = (int)ceilf((s->h + 2) * scale);
+	if (s->h <= 0 || s->h > PAINT_MAX_PT || !zg_ready_here()) return;
+	if (s->row_tex && (s->row_tw != tw || s->row_th != th)) { zg_tex_free(s->row_tex); s->row_tex = 0; }
+	if (!s->row_tex) { s->row_tex = zg_row_tex(tw, th); s->row_tw = tw; s->row_th = th; }
+	float ox = s->x, oy = s->y;
+	zg_row_begin(s->row_tex, tw, th, scale);
+	if (app->style == &zui_style_dotmatrix) { zg_set_dots(2.3f, app->dot_main); zg_set_dot_origin(-oy); }
+	struct zg_xf xf;
+	zg_xf_identity(&xf);
+	zg_xf_translate(&xf, 0, -oy, 0);
+	(void)ox;
+	zg_set_alpha(1);
+	for (zui_node *c = s->first; c; c = c->next) if (c->visible) zui_draw_node(app, c, &xf, zui_now());
+	zg_set_xf(NULL);
+	zg_row_end();
+	s->row_painted = true;
+}
+
+static void *rows_main(void *arg) {
+	void **a = arg;
+	void *(*current)(void *) = (void *(*)(void *))a[0];
+	on_row_thread = true;
+	zg_use_row_batcher();
+	zt_use_row_cache();
+	if (!current(a[1]) || !zg_init()) return NULL;
+	rows_on = true;
+	for (;;) {
+		pthread_mutex_lock(&q_lock);
+		while (!want.set) pthread_cond_wait(&q_wake, &q_lock);
+		zui_node *n = want.list;
+		int r0 = want.r0, r1 = want.r1, dir = want.dir;
+		want.set = false;
+		pthread_mutex_unlock(&q_lock);
+		/* in sight first, then ahead the way it is going */
+		for (int k = 0; k < (r1 - r0 + 1) + 10; k++) {
+			int row = k <= r1 - r0 ? r0 + k : dir >= 0 ? r1 + (k - (r1 - r0)) : r0 - (k - (r1 - r0));
+			zui_lock();
+			struct zui_list_state *L = n->list;
+			if (!L || want.set || row < 0 || row >= L->count) {
+				zui_unlock();
+				if (want.set) break;
+				continue;
+			}
+			zui_node *s = slot_of(L, row);
+			if (!s) {
+				extern void zui_bind_row(zui_node *, int);
+				zui_bind_row(n, row);
+				s = slot_of(L, row);
+			}
+			if (s && !s->row_painted) paint_slot(n, s);
+			zui_unlock();
+		}
+	}
+	return NULL;
+}
+
+void zui_rows_start(zui_app *app, void *(*make_current)(void *), void *arg) {
+	static void *a[2];
+	static pthread_t t;
+	a[0] = (void *)make_current;
+	a[1] = arg;
+	rows_app = app;
+	pthread_create(&t, NULL, rows_main, a);
+	pthread_detach(t);
+}
+
+void zui_bind_row(zui_node *n, int row) { bind_row(n, row); }
+
+/* the frame's side: heights the thread found, rows it must not wait for, what next */
 void zui_list_ensure(zui_node *n, uint32_t now) {
 	struct zui_list_state *L = n->list;
 	if (!L->count) return;
@@ -294,37 +400,111 @@ void zui_list_ensure(zui_node *n, uint32_t now) {
 		int m = (lo + hi) / 2;
 		if (L->y[m + 1] <= top) lo = m + 1; else hi = m;
 	}
-	int first = lo;
-	int last = first;
+	int first = lo, last = first;
 	while (last + 1 < L->count && L->y[last + 1] < bot) last++;
 	L->want0 = first;
 	L->want1 = last;
-	bool have[ZUI_LIST_SLOTS * 2];
-	(void)have;
-	for (int r = first; r <= last; r++) {
-		bool found = false;
-		for (int i = 0; i < ZUI_LIST_SLOTS && !found; i++) found = L->slot[i] && L->slot_row[i] == r;
-		if (!found) bind_row(n, r);
-	}
-	/* ahead, the way it is going: at most one a frame */
-	int dir = first >= L->last_first ? 1 : -1;
+	int dir = first > L->last_first ? 1 : first < L->last_first ? -1 : L->last_dir;
+	L->last_dir = dir;
 	L->last_first = first;
-	for (int k = 1; k <= 6; k++) {
-		int r = dir > 0 ? last + k : first - k;
-		if (r < 0 || r >= L->count) continue;
-		bool found = false;
-		for (int i = 0; i < ZUI_LIST_SLOTS && !found; i++) found = L->slot[i] && L->slot_row[i] == r;
-		if (!found) {
+	bool behind = n->app->trans_to && (int32_t)(now - n->app->trans_start) < n->app->style->transition_ms / 3;
+	zui_lock();
+	for (int r = first; r <= last; r++) {
+		zui_node *s = slot_of(L, r);
+		if (!s && !(rows_on && behind)) {
 			bind_row(n, r);
-			n->app->dirty = true;
-			break;
+			s = slot_of(L, r);
+		}
+		if (s && !s->row_measured) {
+			s->row_measured = true;
+			float was = L->y[r + 1] - L->y[r];
+			changed_height(n, r, s->h - was);
 		}
 	}
-	/* near the start: the app may have more to put there */
+	/* rows the thread made ahead of those in sight */
+	for (int i = 0; i < ZUI_LIST_SLOTS; i++) {
+		zui_node *s = L->slot[i];
+		if (!s || s->row_measured) continue;
+		int r = L->slot_row[i];
+		s->row_measured = true;
+		changed_height(n, r, s->h - (L->y[r + 1] - L->y[r]));
+	}
+	zui_unlock();
+	if (rows_on) {
+		pthread_mutex_lock(&q_lock);
+		want.list = n;
+		want.r0 = first;
+		want.r1 = last;
+		want.dir = dir;
+		want.set = true;
+		pthread_cond_signal(&q_wake);
+		pthread_mutex_unlock(&q_lock);
+	}
 	if (first < 45 && !L->asked && n->cb) {
 		L->asked = true;
 		zui_fire(n, ZUI_EVENT_CHANGE);
 	}
+}
+
+/* Moved textures; a row not painted yet, or under the finger, drawn as it is */
+void zui_list_draw(zui_app *app, zui_node *n, const struct zg_xf *base, uint32_t now, int role, float t, int dir, float scroll) {
+	struct zui_list_state *L = n->list;
+	float a0 = zg_get_alpha(), s = zui_gfx_scale();
+	float rounded = roundf(scroll * s) / s;
+	/* only the tab in front swivels: turned rows off to the side are pulled back
+	 * into view by the perspective */
+	zui_node *tabs = NULL;
+	for (zui_node *p = n; p && p->parent; p = p->parent)
+		if (p->parent->kind == ZK_TABS && zui_tab_at(p->parent, p->parent->tab_cur) == p) tabs = p->parent;
+	int k = 0;
+	for (int row = L->want0; row <= L->want1 && row < L->count; row++) {
+		zui_node *c = slot_of(L, row);
+		if (!c || c->y - scroll > app->height || c->y + c->h - scroll < 0) continue;
+		struct zg_xf rx = *base;
+		float al = 1;
+		if (role) {
+			zg_xf_identity(&rx);
+			zg_xf_translate(&rx, 0, -rounded, 0);
+			app->style->page_xf(app, t, dir, role == 1, 1 + k, 12, &rx, &al);
+			if (al <= 0.002f) { k++; continue; }
+		}
+		k++;
+		/* a tab arriving: its rows swivel in, one after another */
+		if (tabs && tabs->swivel_at && !role) {
+			float u = ((float)(int32_t)(now - tabs->swivel_at) - (k - 1) * 12.0f) / 300.0f;
+			if (u < 1) {
+				u = u < 0 ? 0 : u;
+				float e = zui_ease_emph(u);
+				zg_xf_rotate_x(&rx, -45 * (1 - e), c->y - rounded + c->h / 2);
+				al *= u < 0.05f ? 0 : e;
+				app->dirty = true;
+			}
+		}
+		bool running = false;
+		float arrive = c->arrive.ms ? zanim_value(&c->arrive, now, &running) : 1;
+		if (arrive < 1) {
+			zg_xf_translate(&rx, 0, (1 - arrive) * 36, 0);
+			al *= arrive;
+		}
+		zg_set_alpha(a0 * al);
+		if (c->row_painted && c->row_tex && !zui_has_pressed(app, c)) {
+			zg_set_xf(&rx);
+			zg_row(c->row_tex, 0, c->y, (float)c->row_tw / s, (float)c->row_th / s);
+		} else {
+			zui_lock();
+			zui_draw_node(app, c, &rx, now);
+			zui_unlock();
+		}
+	}
+	zg_set_alpha(a0);
+}
+
+ZUI_EXPORT void zui_swivel(zui_node *n, bool in, int delay_ms) {
+	n->swivel_out = !in;
+	n->swivel_at = zui_now() + (uint32_t)(delay_ms < 0 ? 0 : delay_ms);
+	zanim_go(&n->swivel, 0, 0, zui_now());
+	zanim_go(&n->focus_anim, n->focused ? 1 : 0, (uint32_t)delay_ms + (in ? 300 : 200), zui_now());
+	n->app->dirty = true;
 }
 
 float zui_list_layout(zui_node *n, float x, float y, float w) {
@@ -345,6 +525,7 @@ float zui_list_layout(zui_node *n, float x, float y, float w) {
 }
 
 ZUI_EXPORT void zui_list_set_count(zui_node *n, int count) {
+	zui_lock();
 	struct zui_list_state *L = n->list;
 	for (int i = 0; i < ZUI_LIST_SLOTS; i++) if (L->slot[i]) slot_drop(n, i);
 	L->arrive_from = 0;
@@ -353,10 +534,12 @@ ZUI_EXPORT void zui_list_set_count(zui_node *n, int count) {
 	rebuild_prefix(L);
 	n->app->laid_out = false;
 	n->app->dirty = true;
+	zui_unlock();
 }
 
 /* k more rows at the end */
 ZUI_EXPORT void zui_list_append(zui_node *n, int k) {
+	zui_lock();
 	struct zui_list_state *L = n->list;
 	int old = L->count;
 	L->arrive_from = old;
@@ -366,10 +549,12 @@ ZUI_EXPORT void zui_list_append(zui_node *n, int k) {
 		L->y[i + 1] = L->y[i] + (L->height ? (float)L->height(i, L->data) : L->row_h);
 	n->app->laid_out = false;
 	n->app->dirty = true;
+	zui_unlock();
 }
 
 /* k more rows at the start; nothing on the screen moves or is made again */
 ZUI_EXPORT void zui_list_prepend(zui_node *n, int k) {
+	zui_lock();
 	struct zui_list_state *L = n->list;
 	int old = L->count;
 	float *y = malloc(sizeof(float) * (size_t)(old + k + 1));
@@ -392,6 +577,7 @@ ZUI_EXPORT void zui_list_prepend(zui_node *n, int k) {
 	n->app->down_scroll += at;
 	n->app->laid_out = false;
 	n->app->dirty = true;
+	zui_unlock();
 }
 
 /* this row's content changed */
@@ -460,6 +646,7 @@ void zui_tabs_step(zui_node *tabs, int dir) {
 		app->fling = false;
 		app->laid_out = false;
 		off -= (float)dir;
+		tabs->swivel_at = now + 90;
 		zui_fire(tabs, ZUI_EVENT_CHANGE);
 	}
 	tabs->knob.from = off;

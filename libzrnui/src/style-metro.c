@@ -312,12 +312,26 @@ static void field(zui_app *app, zui_node *n, uint32_t now) {
 		char *t = NULL;
 		const char *txt = n->text ? n->text : "";
 		if (n->focused) {
-			if (asprintf(&t, "%s|", txt) > 0) txt = t;
+			size_t tl = strlen(txt), at = n->caret < 0 || (size_t)n->caret > tl ? tl : (size_t)n->caret;
+			if (asprintf(&t, "%.*s|%s", (int)at, txt, txt + at) > 0) txt = t;
 		}
 		if (*txt) {
 			struct zt_layout *T = zt_slot_get(&n->t[0], txt, ZT_REGULAR, 16, w - 20, 0);
 			float over = T->h + 18 - h;
 			if (over > 0) zg_clip(x, by + 2, w, h - 4);
+			if (n->sel_b > n->sel_a && n->text) {
+				/* what is selected, under the text */
+				float sx, sy, ex, ey, lh;
+				zt_caret_at(n->text, n->sel_a, w - 20, &sx, &sy, &lh);
+				zt_caret_at(n->text, n->sel_b, w - 20, &ex, &ey, &lh);
+				float off = over > 0 ? over : 0;
+				if (sy == ey) zg_rect(x + 10 + sx, by + 9 + sy - off, ex - sx, lh, 0, zc_alpha(zc_rgb(app->accent), 0.45f));
+				else {
+					zg_rect(x + 10 + sx, by + 9 + sy - off, w - 20 - sx, lh, 0, zc_alpha(zc_rgb(app->accent), 0.45f));
+					for (float l = sy + lh; l < ey; l += lh) zg_rect(x + 10, by + 9 + l - off, w - 20, lh, 0, zc_alpha(zc_rgb(app->accent), 0.45f));
+					zg_rect(x + 10, by + 9 + ey - off, ex, lh, 0, zc_alpha(zc_rgb(app->accent), 0.45f));
+				}
+			}
 			zt_draw(T, x + 10, by + 9 - (over > 0 ? over : 0), ink);
 			if (over > 0) zg_noclip();
 		} else {

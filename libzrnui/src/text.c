@@ -359,7 +359,15 @@ static struct zt_layout *dot_layout(const char *s, float size, float max_w, int 
 	return L;
 }
 
+static struct zt_layout *layout_make_locked(const char *utf8, int font, float size, float max_w, int max_lines);
+/* FreeType and HarfBuzz's fonts are one thread's at a time */
 struct zt_layout *zt_layout_make(const char *utf8, int font, float size, float max_w, int max_lines) {
+	zui_lock();
+	struct zt_layout *L = layout_make_locked(utf8, font, size, max_w, max_lines);
+	zui_unlock();
+	return L;
+}
+static struct zt_layout *layout_make_locked(const char *utf8, int font, float size, float max_w, int max_lines) {
 	if (dot_type) return dot_layout(utf8 ? utf8 : "", size, max_w, max_lines);
 	struct zt_layout *L = calloc(1, sizeof(*L));
 	int cap = 0;
@@ -473,10 +481,12 @@ struct cached {
 	unsigned gen;
 	int16_t ax, ay, w, h, left, top;
 };
-static struct cached cache[CACHE];
-static unsigned cache_gen = 1;
-static unsigned cache_count;
-static unsigned cache_zg = ~0u;
+static struct cached cache_main[CACHE], cache_row[CACHE];
+static __thread struct cached *cache = cache_main;
+static __thread unsigned cache_gen = 1;
+static __thread unsigned cache_count;
+static __thread unsigned cache_zg = ~0u;
+void zt_use_row_cache(void) { cache = cache_row; }
 
 static void cache_clear(void) {
 	cache_gen++;
@@ -497,23 +507,33 @@ static const struct cached *glyph_get(int face, uint32_t gid, uint32_t px64, int
 			continue;
 		}
 		/* not there: draw it */
+		zui_lock();
+		struct cached *made = NULL;
+		(void)made;
 		if (cache_count > CACHE * 3 / 4) {
 			cache_clear();
+			zui_unlock();
 			return glyph_get(face, gid, px64, bin);
 		}
 		struct face *f = &T.faces[face];
-		if (!f->ok) return NULL;
-		if (FT_Set_Char_Size(f->ft, 0, px64, 72, 72)) return NULL;
-		if (FT_Load_Glyph(f->ft, gid, FT_LOAD_NO_BITMAP | FT_LOAD_TARGET_LIGHT)) return NULL;
+		if (!f->ok || FT_Set_Char_Size(f->ft, 0, px64, 72, 72) ||
+				FT_Load_Glyph(f->ft, gid, FT_LOAD_NO_BITMAP | FT_LOAD_TARGET_LIGHT)) {
+			zui_unlock();
+			return NULL;
+		}
 		FT_GlyphSlot slot = f->ft->glyph;
 		if (slot->format == FT_GLYPH_FORMAT_OUTLINE && bin)
 			FT_Outline_Translate(&slot->outline, bin * 64 / 3, 0);
-		if (FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL)) return NULL;
+		if (FT_Render_Glyph(slot, FT_RENDER_MODE_NORMAL)) {
+			zui_unlock();
+			return NULL;
+		}
 		FT_Bitmap *bm = &slot->bitmap;
 		int ax = 0, ay = 0;
 		if (bm->width && bm->rows) {
 			if (!zg_atlas_alloc((int)bm->width, (int)bm->rows, &ax, &ay)) {
 				cache_clear();
+				zui_unlock();
 				return glyph_get(face, gid, px64, bin);
 			}
 			zg_atlas_upload(ax, ay, (int)bm->width, (int)bm->rows, bm->buffer, bm->pitch);
@@ -522,6 +542,7 @@ static const struct cached *glyph_get(int face, uint32_t gid, uint32_t px64, int
 			(int16_t)ax, (int16_t)ay, (int16_t)bm->width, (int16_t)bm->rows,
 			(int16_t)slot->bitmap_left, (int16_t)slot->bitmap_top };
 		cache_count++;
+		zui_unlock();
 		return c;
 	}
 	cache_clear();
@@ -532,6 +553,20 @@ static void draw_range(const struct zt_layout *L, float x, float y, uint32_t rgb
 
 /* One glyph of the system's Segoe MDL2 Assets, its box at x, y, `size` across.
  * false: the font is not on this system. */
+/* where a caret after `upto` bytes of `text` lies, wrapped to w */
+void zt_caret_at(const char *text, int upto, float w, float *x, float *y, float *line_h) {
+	char *t = malloc((size_t)upto + 2);
+	memcpy(t, text, (size_t)upto);
+	t[upto] = '|';
+	t[upto + 1] = 0;
+	struct zt_layout *L = zt_layout_make(t, ZT_REGULAR, 16, w, 0);
+	*line_h = L->line_h;
+	*x = L->n ? L->g[L->n - 1].x : 0;
+	*y = (float)(L->lines - 1) * L->line_h;
+	zt_layout_free(L);
+	free(t);
+}
+
 bool zt_icon(uint32_t code, float x, float y, float size, uint32_t rgba) {
 	static int face = -2;
 	if (face == -2) {

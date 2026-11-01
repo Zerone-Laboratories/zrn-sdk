@@ -106,6 +106,8 @@ Cyrillic; CJK and anything Inter lacks come from fontconfig's fallback
 shell's `ZTMETRO_SCALE` (4 on the S9: 1440x2960 pixels is 360x740 points),
 else the compositor's preferred buffer scale, else the output's.
 
+**Rows.** As ZrnMetroCore does it: a list's rows are bound and painted once on a thread with its own GL context, batcher and glyph cache, into a texture, and a frame only moves textures. A frame takes the lock only for a row that is not ready. Bind functions run on that thread: hold `zui_list_lock` while changing what they read.
+
 **Threads.** One UI thread; `zui_post` is the way in from others (an eventfd
 and a locked queue). One app per process: fonts and glyphs are per process.
 

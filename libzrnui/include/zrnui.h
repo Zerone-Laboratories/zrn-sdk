@@ -181,6 +181,11 @@ void zui_set_bar(zui_node *row, bool bar);
 zui_node *zui_bubble(zui_node *parent, bool mine);
 /* A page's title as given and smaller, with a line under it (a person's name) */
 void zui_page_set_compact(zui_node *page, bool compact);
+/* Windows Phone's Swivel: in (from -45 degrees, 300 ms) or out (to 60, 200 ms), after delay_ms */
+void zui_swivel(zui_node *node, bool in, int delay_ms);
+/* Rows of lists are bound on a thread of their own: hold this while changing what a
+ * bind function reads. It may be held again by the same thread. */
+void zui_list_lock(zui_app *app, bool lock);
 /* the window is in front of the others */
 bool zui_app_active(zui_app *app);
 

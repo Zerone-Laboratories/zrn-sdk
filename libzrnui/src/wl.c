@@ -342,6 +342,7 @@ static void render(struct zui_wl *w) {
 	if (scale != app->scale) {
 		app->scale = scale;
 	}
+	app->paint_scale = (float)scale;
 	int fw = (int)lroundf(app->width) * scale, fh = (int)lroundf(app->height) * scale;
 	wl_egl_window_resize(w->egl_window, fw, fh, 0, 0);
 	wl_surface_set_buffer_scale(w->surface, scale);
@@ -380,6 +381,33 @@ static void render(struct zui_wl *w) {
 		perf.fh = fh;
 		if (++perf.n == 60) perf_report();
 	}
+	{
+		/* ZUI_CAPTURE=DIR: while DIR/go exists, every frame to DIR/NNNN.rgba (a quarter
+		 * size), to look at consecutive frames for what a still would miss */
+		static const char *cap;
+		static int capn;
+		if (!cap) { cap = getenv("ZUI_CAPTURE"); if (!cap) cap = ""; }
+		char go[300];
+		snprintf(go, sizeof(go), "%s/go", cap);
+		if (*cap && access(go, F_OK) == 0 && capn < 400) {
+			uint8_t *px = malloc((size_t)fw * fh * 4);
+			glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px);
+			char f[320];
+			snprintf(f, sizeof(f), "%s/%04d.rgba", cap, capn++);
+			FILE *o = fopen(f, "wb");
+			if (o) {
+				uint8_t *line = malloc((size_t)fw);
+				for (int y = fh - 4; y >= 0; y -= 4) {
+					int k = 0;
+					for (int x = 0; x + 4 <= fw; x += 4, k += 3) memcpy(line + k, px + ((size_t)y * fw + x) * 4, 3);
+					fwrite(line, 1, (size_t)k, o);
+				}
+				free(line);
+				fclose(o);
+			}
+			free(px);
+		}
+	}
 	if (w->snap_pending) {
 		uint8_t *px = malloc((size_t)fw * fh * 4);
 		glReadPixels(0, 0, fw, fh, GL_RGBA, GL_UNSIGNED_BYTE, px);
@@ -402,6 +430,13 @@ static void frame_done(void *d, struct wl_callback *cb, uint32_t time) {
 	w->frame = NULL;
 }
 
+static struct zui_wl *row_w;
+static EGLContext row_context;
+static void *row_current(void *arg) {
+	(void)arg;
+	return eglMakeCurrent(row_w->egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE, row_context) ? row_w : NULL;
+}
+
 static bool egl_setup(struct zui_wl *w) {
 	w->egl_display = eglGetDisplay((EGLNativeDisplayType)w->display);
 	if (w->egl_display == EGL_NO_DISPLAY || !eglInitialize(w->egl_display, NULL, NULL)) return false;
@@ -421,7 +456,19 @@ static bool egl_setup(struct zui_wl *w) {
 	if (!eglMakeCurrent(w->egl_display, w->egl_surface, w->egl_surface, w->egl_context)) return false;
 	/* the frame callback is the clock */
 	eglSwapInterval(w->egl_display, 0);
-	return zg_init();
+	if (!zg_init()) return false;
+	/* rows are painted by a thread with a context of its own, sharing textures */
+	w->app->paint_scale = (float)scale;
+	if (!getenv("ZUI_NO_ROW_THREAD")) {
+		static EGLContext row_ctx;
+		row_ctx = eglCreateContext(w->egl_display, w->egl_config, w->egl_context, ctx);
+		if (row_ctx != EGL_NO_CONTEXT) {
+			row_w = w;
+			row_context = row_ctx;
+			zui_rows_start(w->app, row_current, NULL);
+		}
+	}
+	return true;
 }
 
 /* ---- ZUI_SCRIPT ---- */

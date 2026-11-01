@@ -24,7 +24,7 @@ struct vtx {
 	float r, bw, blur, mode;
 	uint8_t c[4];		/* premultiplied */
 };
-enum { M_FILL = 0, M_BORDER = 1, M_SHADOW = 2, M_GLYPH = 3, M_IMAGE = 4, M_DOT = 5 };
+enum { M_FILL = 0, M_BORDER = 1, M_SHADOW = 2, M_GLYPH = 3, M_IMAGE = 4, M_DOT = 5, M_ROW = 6 };
 
 #define MAX_QUADS 8192
 static struct {
@@ -46,7 +46,13 @@ static struct {
 	int clip[4];
 	/* the atlas, filled in shelves */
 	int shelf_x, shelf_y, shelf_h;
-} G;
+} G_main, G_row;
+/* each thread that draws has its own batcher, program and atlas; textures are shared */
+static __thread __typeof__(G_main) *Gp = &G_main;
+#define G (*Gp)
+void zg_use_row_batcher(void) { Gp = &G_row; }
+unsigned zg_main_generation(void) { return G_main.generation; }
+bool zg_ready_here(void) { return G.ready; }
 
 static const char VS[] =
 	"attribute vec3 a_pos; attribute vec2 a_local; attribute vec2 a_half;"
@@ -64,6 +70,7 @@ static const char FS[] =
 	"float box(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+r;"
 	" return min(max(q.x,q.y),0.0)+length(max(q,0.0))-r; }"
 	"void main(){ float mode=v_p.w;"
+	" if(mode>5.5){ gl_FragColor=texture2D(u_image,vec2(0.5+0.5*v_local.x/v_half.x,0.5-0.5*v_local.y/v_half.y))*v_color.a; return; }"
 	" if(mode>4.5){ float q=box(v_local,v_half,v_p.x); gl_FragColor=v_color*clamp(0.5-q/u_px,0.0,1.0); return; }"
 	" vec2 off=vec2(0.0); float lit=1.0;"
 	" if(u_dots>0.0&&mode<2.5||u_dots>0.0&&mode>3.5){ vec2 fc=vec2(gl_FragCoord.x,-gl_FragCoord.y)*u_px;"
@@ -475,6 +482,48 @@ void zg_set_dot_origin(float y) {
 
 void zg_dot(float cx, float cy, float radius, uint32_t rgba) {
 	shape(cx - radius, cy - radius, radius * 2, radius * 2, radius, 0, 0, M_DOT, rgba);
+}
+
+/* ---- rows painted once: into a texture, then only moved ---- */
+static __thread GLuint row_fbo;
+void zg_row_begin(unsigned tex, int w, int h, float scale) {
+	if (!row_fbo) glGenFramebuffers(1, &row_fbo);
+	glBindFramebuffer(GL_FRAMEBUFFER, row_fbo);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+	zg_begin(w, h, scale, 0x00000000);
+}
+void zg_row_end(void) {
+	zg_end();
+	glFinish();	/* the other context may sample it as soon as it is published */
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+unsigned zg_row_tex(int w, int h) {
+	GLuint t;
+	glGenTextures(1, &t);
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, t);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+	G.bound_image = t;
+	glActiveTexture(GL_TEXTURE0);
+	return t;
+}
+void zg_row(unsigned tex, float x, float y, float w, float h) {
+	if (G.bound_image != tex) {
+		flush();
+		glActiveTexture(GL_TEXTURE1);
+		glBindTexture(GL_TEXTURE_2D, tex);
+		glActiveTexture(GL_TEXTURE0);
+		G.bound_image = tex;
+	}
+	float hx = w / 2, hy = h / 2;
+	const float pos[4][2] = { { x, y }, { x + w, y }, { x, y + h }, { x + w, y + h } };
+	const float local[4][2] = { { -hx, -hy }, { hx, -hy }, { -hx, hy }, { hx, hy } };
+	emit(pos, local, hx, hy, 0, 0, 0, M_ROW, 0xffffffff);
+	flush();
 }
 
 /* ---- pictures: their own texture, so a draw call each ---- */

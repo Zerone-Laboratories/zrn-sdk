@@ -312,6 +312,7 @@ static void node_free(zui_node *n) {
 	free(n->badge);
 	free(n->monogram);
 	zui_pixmap_free(n->pix);
+	if (n->row_tex) zg_tex_free(n->row_tex);
 	zui_list_free(n);
 	free(n);
 }
@@ -446,6 +447,7 @@ ZUI_EXPORT zui_node *zui_field(zui_node *parent, const char *placeholder, zui_cb
 	for (zui_node *p = parent; p; p = p->parent) if (p->kind == ZK_FOOTER) n->inline_hint = true;
 	set_str(&n->subtitle, placeholder);
 	set_str(&n->text, "");
+	n->caret = -1;
 	n->cb = cb;
 	n->data = data;
 	return n;
@@ -456,7 +458,7 @@ static void changed(zui_node *n, bool layout) {
 	n->app->dirty = true;
 }
 
-ZUI_EXPORT void zui_set_text(zui_node *n, const char *t) { set_str(&n->text, t ? t : ""); changed(n, true); }
+ZUI_EXPORT void zui_set_text(zui_node *n, const char *t) { set_str(&n->text, t ? t : ""); n->caret = -1; n->sel_a = n->sel_b = 0; changed(n, true); }
 ZUI_EXPORT const char *zui_get_text(zui_node *n) { return n->text ? n->text : ""; }
 ZUI_EXPORT void zui_set_detail(zui_node *n, const char *t) { set_str(&n->detail, t); changed(n, true); }
 ZUI_EXPORT void zui_set_subtitle(zui_node *n, const char *t) { set_str(&n->subtitle, t); changed(n, true); }
@@ -908,6 +910,7 @@ static float layout_node(zui_node *n, float x, float y, float w) {
 }
 
 void zui_do_layout(zui_app *app, zui_node *page) {
+	zui_lock();
 	const struct zui_metrics *m = &app->style->m;
 	page->x = 0;
 	page->y = 0;
@@ -927,6 +930,7 @@ void zui_do_layout(zui_app *app, zui_node *page) {
 	}
 	page->content_h = y + (foot > 0 ? foot + 8 : m->margin * 2);
 	page->h = page->content_h;
+	zui_unlock();
 }
 
 ZUI_EXPORT void zui_layout(zui_app *app, zui_node *page, int width, int height) {
@@ -990,6 +994,35 @@ static void slider_to(zui_app *app, zui_node *s, float x) {
 	zui_fire(s, ZUI_EVENT_CHANGE);
 }
 
+/* where the finger put the caret: the character boundary nearest it; twice: the word */
+static void field_tapped(zui_app *app, zui_node *f, bool twice) {
+	const char *t = f->text ? f->text : "";
+	size_t len = strlen(t);
+	f->sel_a = f->sel_b = 0;
+	if (!f->multiline || !len || len > 1500) { f->caret = (int)len; return; }
+	float tx = app->last_x - f->x - 10, ty = app->last_y - f->y - 9;
+	if (f->parent) {}
+	int best = (int)len;
+	float bd = 1e9f;
+	for (size_t i = 0; i <= len; i++) {
+		if (i < len && ((unsigned char)t[i] & 0xc0) == 0x80) continue;
+		float x, y, lh;
+		zt_caret_at(t, (int)i, f->w - 20, &x, &y, &lh);
+		float dy = ty - (y + lh / 2), dx = tx - x, d = dx * dx + dy * dy * 6;
+		if (d < bd) { bd = d; best = (int)i; }
+	}
+	f->caret = best;
+	if (twice) {
+		int a = best, b = best;
+		while (a > 0 && t[a - 1] != ' ' && t[a - 1] != '\n') a--;
+		while (t[b] && t[b] != ' ' && t[b] != '\n') b++;
+		f->sel_a = a;
+		f->sel_b = b;
+		f->caret = b;
+	}
+	app->dirty = true;
+}
+
 static void activate(zui_app *app, zui_node *n) {
 	switch (n->kind) {
 	case ZK_SWITCH:
@@ -997,9 +1030,14 @@ static void activate(zui_app *app, zui_node *n) {
 		zui_haptic("click");
 		zui_fire(n, ZUI_EVENT_CHANGE);
 		break;
-	case ZK_FIELD:
+	case ZK_FIELD: {
+		uint32_t t = zui_now();
+		bool twice = app->focus == n && t - n->last_tap < 350;
+		n->last_tap = t;
 		focus(app, n);
+		field_tapped(app, n, twice);
 		break;
+	}
 	default:
 		zui_haptic("tap");
 		zui_fire(n, ZUI_EVENT_CLICK);
@@ -1032,6 +1070,7 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 			return;	/* the header: a tap there is handled on the lift */
 		}
 		page->stick_end = false;
+		zui_lock();
 		zui_node *hit = NULL;
 		if (page->footer && page->footer->visible && y >= page->footer->y - 8) {
 			hit = hit_in(page->footer, x, y);
@@ -1042,10 +1081,12 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 				zanim_go(&app->press, 1, 90, now);
 			}
 			app->dirty = true;
+			zui_unlock();
 			return;
 		}
 		app->in_footer = false;
 		hit = hit_in(page, x, y + page->scroll);
+		zui_unlock();
 		if (hit && hit->kind == ZK_SLIDER) {
 			app->drag_slider = hit;
 			slider_to(app, hit, x);
@@ -1191,18 +1232,26 @@ void zui_key_text(zui_app *app, const char *utf8) {
 	}
 	if (f->multiline) app->laid_out = false;
 	size_t len = f->text ? strlen(f->text) : 0;
-	if (strcmp(utf8, "\b") == 0) {
-		if (!len) return;
-		size_t cut = len - 1;
-		while (cut > 0 && ((unsigned char)f->text[cut] & 0xc0) == 0x80) cut--;
-		f->text[cut] = 0;
-	} else {
-		char *t = malloc(len + strlen(utf8) + 1);
-		memcpy(t, f->text ? f->text : "", len);
-		strcpy(t + len, utf8);
-		free(f->text);
-		f->text = t;
+	size_t at = f->caret < 0 || (size_t)f->caret > len ? len : (size_t)f->caret, cut_a = at, cut_b = at;
+	bool back = strcmp(utf8, "\b") == 0;
+	if (f->sel_b > f->sel_a && (size_t)f->sel_b <= len) {
+		cut_a = (size_t)f->sel_a;
+		cut_b = (size_t)f->sel_b;
+	} else if (back) {
+		if (!at) return;
+		cut_a = at - 1;
+		while (cut_a > 0 && ((unsigned char)f->text[cut_a] & 0xc0) == 0x80) cut_a--;
 	}
+	const char *ins = back ? "" : utf8;
+	size_t il = strlen(ins);
+	char *t = malloc(len - (cut_b - cut_a) + il + 1);
+	memcpy(t, f->text ? f->text : "", cut_a);
+	memcpy(t + cut_a, ins, il);
+	strcpy(t + cut_a + il, f->text ? f->text + cut_b : "");
+	free(f->text);
+	f->text = t;
+	f->caret = (int)(cut_a + il);
+	f->sel_a = f->sel_b = 0;
 	app->dirty = true;
 	zui_fire(f, ZUI_EVENT_CHANGE);
 }
@@ -1389,9 +1438,18 @@ static void draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint3
 		}
 		if (!running && press <= 0.001f) app->pressed = NULL;
 	}
-	zg_set_xf(&xf);
 	float alpha = zg_get_alpha();
-	if (!n->enabled) zg_set_alpha(alpha * 0.4f);
+	if (n->swivel_at) {
+		float dur = n->swivel_out ? 200 : 300, u = (float)(int32_t)(now - n->swivel_at) / dur;
+		u = u < 0 ? 0 : u > 1 ? 1 : u;
+		float e = zui_ease_emph(u);
+		zg_xf_rotate_x(&xf, n->swivel_out ? 60 * e : -45 * (1 - e), n->y + n->h / 2);
+		zg_set_alpha(alpha * (n->swivel_out ? 1 - u : (u <= 0 ? 0 : e)));
+		if (u >= 1 && !n->swivel_out) n->swivel_at = 0;
+		else app->dirty = true;
+	}
+	zg_set_xf(&xf);
+	if (!n->enabled) zg_set_alpha(zg_get_alpha() * 0.4f);
 	float pad = in_card(n) && !card_row_kind(n->kind) ? st->m.card_pad : 0;
 	switch (n->kind) {
 	case ZK_COLUMN: case ZK_ROW:
@@ -1404,37 +1462,9 @@ static void draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint3
 		break;
 	case ZK_LIST: {
 		float sc = app->page ? app->page->scroll : 0;
-		/* (a tab that is not in front has its own scroll) */
 		for (zui_node *p = n; p->parent; p = p->parent)
 			if (p->parent->kind == ZK_TABS && zui_tab_at(p->parent, p->parent->tab_cur) != p) sc = p->scroll;
-		/* in sight, top first: a page turn takes the rows one by one */
-		int k = 0;
-		float a0 = zg_get_alpha();
-		for (int i = 0; i < n->list->want1 - n->list->want0 + 1; i++) {
-			int row = n->list->want0 + i;
-			zui_node *c = NULL;
-			for (int q = 0; q < ZUI_LIST_SLOTS && !c; q++)
-				if (n->list->slot[q] && n->list->slot_row[q] == row) c = n->list->slot[q];
-			if (!c || c->y - sc > app->height || c->y + c->h - sc < 0) continue;
-			struct zg_xf rx = xf;
-			float al = 1;
-			if (turn_role) {
-				zg_xf_identity(&rx);
-				zg_xf_translate(&rx, 0, -roundf(turn_scroll * zui_gfx_scale()) / zui_gfx_scale(), 0);
-				st->page_xf(app, turn_t, turn_dir, turn_role == 1, 1 + k, 12, &rx, &al);
-				k++;
-				if (al <= 0.002f) continue;
-			}
-			bool running = false;
-			float arrive = c->arrive.ms ? zanim_value(&c->arrive, now, &running) : 1;
-			if (arrive < 1) {
-				zg_xf_translate(&rx, 0, (1 - arrive) * 36, 0);
-				al *= arrive;
-			}
-			zg_set_alpha(a0 * al);
-			draw_node(app, c, &rx, now);
-		}
-		zg_set_alpha(a0);
+		zui_list_draw(app, n, &xf, now, turn_role, turn_t, turn_dir, sc);
 		break;
 	}
 	case ZK_TABS: {
@@ -1503,6 +1533,13 @@ static void draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint3
 		break;
 	}
 	zg_set_alpha(alpha);
+}
+
+void zui_draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint32_t now) { draw_node(app, n, base, now); }
+
+bool zui_has_pressed(const zui_app *app, const zui_node *n) {
+	for (const zui_node *p = app->pressed; p; p = p->parent) if (p == n) return true;
+	return false;
 }
 
 /* one page, moved by `trans` (NULL at rest); role: 0 at rest, 1 incoming, 2 outgoing */

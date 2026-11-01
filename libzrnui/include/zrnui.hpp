@@ -166,6 +166,7 @@ public:
 	void back() { zui_back(app_); }
 	void quit() { zui_quit(app_); }
 	void busy(bool b) { zui_busy(app_, b); }
+	void lock(bool on) { zui_list_lock(app_, on); }
 	void toast(const std::string &s) { zui_toast(app_, s.c_str()); }
 	void set_style(const std::string &s) { zui_app_set_style(app_, s.c_str()); }
 	void set_theme(const std::string &s) { zui_app_set_theme(app_, s.c_str()); }

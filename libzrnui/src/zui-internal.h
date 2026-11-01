@@ -42,6 +42,13 @@ void zg_image(unsigned tex, float x, float y, float w, float h, float r, float c
 void zg_set_dots(float pitch, uint32_t main_rgb);
 void zg_set_dot_origin(float y);
 void zg_dot(float cx, float cy, float radius, uint32_t rgba);
+void zg_use_row_batcher(void);
+unsigned zg_main_generation(void);
+bool zg_ready_here(void);
+void zg_row_begin(unsigned tex, int w, int h, float scale);
+void zg_row_end(void);
+unsigned zg_row_tex(int w, int h);
+void zg_row(unsigned tex, float x, float y, float w, float h);
 void zg_clip(float x, float y, float w, float h);	/* points; only without a transform */
 void zg_noclip(void);
 void zg_rect(float x, float y, float w, float h, float r, uint32_t rgba);
@@ -77,6 +84,9 @@ struct zt_layout {
 	float w, h, line_h, ascent, size;
 };
 /* what each role is in the style in use: font files or fontconfig names */
+void zt_use_row_cache(void);
+void zui_lock(void);
+void zui_unlock(void);
 void zt_set_fonts(const char *const files[ZT_FONTS], float line_spacing);
 /* DotMatrix's 3x5 dot type in place of all fonts (and of shaping) */
 void zt_set_dot_type(bool on);
@@ -113,7 +123,7 @@ struct zui_pixmap { int w, h, refs; uint8_t *rgba; unsigned tex, gen; };
 
 #define ZUI_LIST_SLOTS 48
 struct zui_list_state {
-	int count, want0, want1, last_first, arrive_from;
+	int count, want0, want1, last_first, last_dir, arrive_from;
 	bool asked;
 	float row_h, *y;	/* y[row], y[count] the end */
 	zui_list_height height;
@@ -168,6 +178,16 @@ struct zui_node {
 	struct zanim arrive;	/* a new row rising in */
 	char *badge, *monogram;
 	struct zui_list_state *list;
+	/* a row of a list: painted once, then only moved */
+	unsigned row_tex;
+	int row_tw, row_th;
+	bool row_painted, row_measured;
+	struct zanim swivel;
+	bool swivel_out;
+	uint32_t swivel_at;
+	/* a field */
+	int caret, sel_a, sel_b;	/* bytes; caret -1: the end */
+	uint32_t last_tap;
 };
 
 #define ZUI_MAX_FDS 32
@@ -196,6 +216,7 @@ struct zui_app {
 	/* the finger */
 	bool touching, dragging, scrolling_page, swiping;
 	bool active;
+	float paint_scale;
 	int firing;		/* inside a handler: what it destroys is freed after it */
 	zui_node *grave;
 	bool in_footer;
@@ -241,6 +262,12 @@ zui_node *zui_node_new_kind(zui_node *parent, int kind);
 float zui_layout_at(zui_node *n, float x, float y, float w);
 void zui_move_children(zui_node *n, float dy);
 void zui_list_ensure(zui_node *n, uint32_t now);
+void zui_rows_start(zui_app *app, void *(*make_current)(void *), void *arg);
+bool zui_rows_running(void);
+void zui_list_draw(zui_app *app, zui_node *n, const struct zg_xf *base, uint32_t now, int role, float t, int dir, float scroll);
+void zui_draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint32_t now);
+bool zui_has_pressed(const zui_app *app, const zui_node *n);
+void zt_caret_at(const char *text, int upto, float w, float *x, float *y, float *line_h);
 void zui_tabs_step(zui_node *tabs, int dir);
 float zui_list_layout(zui_node *n, float x, float y, float w);
 void zui_list_free(zui_node *n);
