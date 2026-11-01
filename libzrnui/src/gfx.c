@@ -24,7 +24,7 @@ struct vtx {
 	float r, bw, blur, mode;
 	uint8_t c[4];		/* premultiplied */
 };
-enum { M_FILL = 0, M_BORDER = 1, M_SHADOW = 2, M_GLYPH = 3, M_IMAGE = 4, M_DOT = 5, M_ROW = 6 };
+enum { M_FILL = 0, M_BORDER = 1, M_SHADOW = 2, M_GLYPH = 3, M_IMAGE = 4, M_DOT = 5, M_ROW = 6, M_WEDGE = 7 };
 
 #define MAX_QUADS 8192
 static struct {
@@ -70,6 +70,8 @@ static const char FS[] =
 	"float box(vec2 p, vec2 b, float r){ vec2 q=abs(p)-b+r;"
 	" return min(max(q.x,q.y),0.0)+length(max(q,0.0))-r; }"
 	"void main(){ float mode=v_p.w;"
+	" if(mode>6.5){ float e1=box(v_local,v_half,0.0); float e2=dot(v_local,v_p.xy)+v_p.z;"
+	"  gl_FragColor=v_color*clamp(0.5-e1/u_px,0.0,1.0)*clamp(0.5-e2/u_px,0.0,1.0); return; }"
 	" if(mode>5.5){ gl_FragColor=texture2D(u_image,vec2(0.5+0.5*v_local.x/v_half.x,0.5-0.5*v_local.y/v_half.y))*v_color.a; return; }"
 	" if(mode>4.5){ float q=box(v_local,v_half,v_p.x); gl_FragColor=v_color*clamp(0.5-q/u_px,0.0,1.0); return; }"
 	" vec2 off=vec2(0.0); float lit=1.0;"
@@ -428,6 +430,21 @@ void zg_ring(float cx, float cy, float radius, float width, uint32_t rgba) {
 }
 
 /* a stroke with round ends: a rounded rectangle turned along the line */
+/* A right triangle on the box x, y, w, h: its vertical side at the left or right,
+ * its flat side at the top or bottom, the slope smooth at any scale and turn. */
+void zg_wedge(float x, float y, float w, float h, bool right, bool bottom, uint32_t rgba) {
+	float hx = w / 2, hy = h / 2, len = sqrtf(w * w + h * h);
+	float nx = (right ? -h : h) / len, ny = (right == bottom ? -w : w) / len;
+	/* the slope joins the two corners away from the right angle */
+	float px = right ? hx : -hx, py = bottom ? -hy : hy;
+	float cut = -(nx * (right ? -hx : hx) + ny * py);
+	(void)px;
+	float pad = 1.5f / G.scale, x0 = x - pad, y0 = y - pad, x1 = x + w + pad, y1 = y + h + pad, cx = x + hx, cy = y + hy;
+	const float pos[4][2] = { { x0, y0 }, { x1, y0 }, { x0, y1 }, { x1, y1 } };
+	const float local[4][2] = { { x0 - cx, y0 - cy }, { x1 - cx, y0 - cy }, { x0 - cx, y1 - cy }, { x1 - cx, y1 - cy } };
+	emit(pos, local, hx, hy, nx, ny, cut, M_WEDGE, rgba);
+}
+
 void zg_line(float x0, float y0, float x1, float y1, float width, uint32_t rgba) {
 	float dx = x1 - x0, dy = y1 - y0, len = sqrtf(dx * dx + dy * dy);
 	if (len < 1e-4f) {

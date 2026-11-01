@@ -28,6 +28,8 @@ struct face {
 	hb_font_t *hb;
 	float upem, asc, desc;
 	bool ok;
+	bool colour;	/* a bitmap font of colour glyphs: one strike, scaled once for each size */
+	float strike;
 };
 
 static struct {
@@ -52,8 +54,12 @@ static int face_open(const char *path) {
 	struct face *f = &T.faces[T.n];
 	memset(f, 0, sizeof(*f));
 	f->path = strdup(path);
-	if (FT_New_Face(T.ft, path, 0, &f->ft) || !FT_IS_SCALABLE(f->ft)) {
-		/* bitmap-only fonts (colour emoji) are not drawn yet */
+	bool opened = !FT_New_Face(T.ft, path, 0, &f->ft);
+	if (opened && !FT_IS_SCALABLE(f->ft) && FT_HAS_COLOR(f->ft) && f->ft->num_fixed_sizes > 0 &&
+			!FT_Select_Size(f->ft, 0)) {
+		f->colour = true;
+		f->strike = f->ft->size->metrics.y_ppem ? (float)f->ft->size->metrics.y_ppem : 109;
+	} else if (!opened || !FT_IS_SCALABLE(f->ft)) {
 		if (f->ft) FT_Done_Face(f->ft);
 		f->ft = NULL;
 		T.n++;
@@ -64,7 +70,7 @@ static int face_open(const char *path) {
 	hb_blob_destroy(blob);
 	f->hb = hb_font_create(hface);
 	hb_face_destroy(hface);
-	f->upem = (float)f->ft->units_per_EM;
+	f->upem = f->ft->units_per_EM ? (float)f->ft->units_per_EM : 2048;
 	hb_font_set_scale(f->hb, (int)f->upem, (int)f->upem);
 	f->asc = f->ft->ascender / f->upem;
 	f->desc = -f->ft->descender / f->upem;
@@ -156,7 +162,23 @@ static bool face_has(int i, uint32_t cp) {
 	return i >= 0 && i < T.n && T.faces[i].ok && FT_Get_Char_Index(T.faces[i].ft, cp) != 0;
 }
 
+static bool emoji_cp(uint32_t cp) {
+	return (cp >= 0x1f000 && cp < 0x1fb00) || (cp >= 0x2600 && cp < 0x27c0) || (cp >= 0x2b00 && cp < 0x2c00) ||
+		cp == 0x2122 || cp == 0xa9 || cp == 0xae || cp == 0x3030 || cp == 0x303d || cp == 0x3297 || cp == 0x3299;
+}
+static int emoji_face(void) {
+	static int face = -2;
+	if (face == -2) {
+		face = -1;
+		char *p = fc_find("Noto Color Emoji", 0);
+		if (p && strcasestr(p, "emoji")) face = face_open(p);
+		free(p);
+	}
+	return face;
+}
+
 static int face_for(int primary, uint32_t cp) {
+	if (emoji_cp(cp) && cp != 0xa9 && cp != 0xae && cp != 0x2122 && face_has(emoji_face(), cp)) return emoji_face();
 	if (face_has(primary, cp) || cp < 0x20) return primary;
 	for (int i = 0; i < fallback_n; i++)
 		if (fallback_seen[i].cp == cp) return fallback_seen[i].face < 0 ? primary : fallback_seen[i].face;
@@ -223,7 +245,7 @@ static void shape_para(struct shaped *out, const char *text, int len, int primar
 			uint32_t cp = utf8_next(text, &i, len);
 			hb_unicode_general_category_t cat = hb_unicode_general_category(hb_unicode_funcs_get_default(), cp);
 			bool mark = cat == HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK ||
-				cat == HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK || cp == 0x200d || cp == 0x200c;
+				cat == HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK || cp == 0x200d || cp == 0x200c || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x1f3fb && cp <= 0x1f3ff) || cp == 0x20e3;
 			int f = (mark && face >= 0) ? face : face_for(primary, cp);
 			if (face < 0) face = f;
 			else if (f != face) { i = at; break; }
@@ -597,6 +619,55 @@ void zt_draw_clipped(const struct zt_layout *L, float x, float y, uint32_t rgba,
 	draw_range(L, x, y, rgba, x0, x1);
 }
 
+/* ---- colour glyphs: each scaled once from the font's strike, one small texture each ---- */
+#define COLOUR_CACHE 96
+struct colour_glyph { uint32_t gid, px; uint16_t face; unsigned tex, zg; int w, h, left, top; };
+static __thread struct colour_glyph colour_cache[COLOUR_CACHE];
+
+static const struct colour_glyph *colour_get(int face, uint32_t gid, float px) {
+	uint32_t want = (uint32_t)lroundf(px);
+	struct colour_glyph *c = &colour_cache[(gid * 31u + want) % COLOUR_CACHE];
+	unsigned zg = zg_generation();
+	if (c->tex && c->zg == zg && c->gid == gid && c->px == want && c->face == face) return c;
+	if (c->tex && c->zg == zg) zg_tex_free(c->tex);
+	c->tex = 0;
+	zui_lock();
+	struct face *f = &T.faces[face];
+	if (FT_Load_Glyph(f->ft, gid, FT_LOAD_COLOR) || f->ft->glyph->bitmap.pixel_mode != FT_PIXEL_MODE_BGRA) {
+		zui_unlock();
+		return NULL;
+	}
+	FT_GlyphSlot sl = f->ft->glyph;
+	float k = px / f->strike;
+	int sw = (int)sl->bitmap.width, sh = (int)sl->bitmap.rows, w = (int)ceilf(sw * k), h = (int)ceilf(sh * k);
+	if (w < 1) w = 1;
+	if (h < 1) h = 1;
+	uint8_t *out = calloc((size_t)w * h, 4);
+	/* each pixel the mean of what falls in it; already premultiplied, as the batcher wants */
+	for (int oy = 0; oy < h; oy++) {
+		int y0 = oy * sh / h, y1 = (oy + 1) * sh / h;
+		if (y1 <= y0) y1 = y0 + 1;
+		for (int ox = 0; ox < w; ox++) {
+			int x0 = ox * sw / w, x1 = (ox + 1) * sw / w, sum[4] = { 0 }, n = 0;
+			if (x1 <= x0) x1 = x0 + 1;
+			for (int sy = y0; sy < y1 && sy < sh; sy++) {
+				const uint8_t *p = sl->bitmap.buffer + sy * sl->bitmap.pitch + x0 * 4;
+				for (int sx = x0; sx < x1 && sx < sw; sx++, p += 4, n++) {
+					sum[0] += p[2]; sum[1] += p[1]; sum[2] += p[0]; sum[3] += p[3];
+				}
+			}
+			uint8_t *o = out + ((size_t)oy * w + ox) * 4;
+			for (int i = 0; n && i < 4; i++) o[i] = (uint8_t)(sum[i] / n);
+		}
+	}
+	*c = (struct colour_glyph){ gid, want, (uint16_t)face, 0, zg, w, h,
+		(int)lroundf(sl->bitmap_left * k), (int)lroundf(sl->bitmap_top * k) };
+	zui_unlock();
+	c->tex = zg_tex_new(w, h, out, false);
+	free(out);
+	return c;
+}
+
 static void draw_range(const struct zt_layout *L, float x, float y, uint32_t rgba, float x0, float x1) {
 	if (!L) return;
 	if (dot_type) {
@@ -622,6 +693,12 @@ static void draw_range(const struct zt_layout *L, float x, float y, uint32_t rgb
 			if (bin > 2) bin = 2;
 			gx = fx;
 			gy = roundf(gy);
+		}
+		if (g->face < T.n && T.faces[g->face].colour) {
+			const struct colour_glyph *e = colour_get(g->face, g->gid, L->size * scale);
+			if (e && g->x >= x0 - 0.5f && g->x <= x1 + 0.5f)
+				zg_image(e->tex, (gx + e->left) / scale, (gy - e->top) / scale, e->w / scale, e->h / scale, 0, 1, 1);
+			continue;
 		}
 		const struct cached *c = glyph_get(g->face, g->gid, px64, bin);
 		if (!c || !c->w) continue;

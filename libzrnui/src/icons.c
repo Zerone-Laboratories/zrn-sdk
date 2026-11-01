@@ -30,7 +30,7 @@ static void dot(const struct pen *p, float cx, float cy, float r) {
 /* Segoe MDL2 Assets, the system's, by the names apps use. DotMatrix and a system
  * without the font draw the strokes below: they fall on the lattice as dots. */
 static const struct { const char *name; uint32_t code; } MDL2[] = {
-	{ "send", 0xE724 }, { "chevron", 0xE76C }, { "back", 0xE72B }, { "check", 0xE73E }, { "plus", 0xE710 },
+	{ "send", 0xE724 }, { "settings", 0xE713 }, { "smile", 0xE76E }, { "chevron", 0xE76C }, { "back", 0xE72B }, { "check", 0xE73E }, { "plus", 0xE710 },
 	{ "close", 0xE711 }, { "more", 0xE712 }, { "search", 0xE721 }, { "wifi", 0xE701 }, { "bluetooth", 0xE702 },
 	{ "bell", 0xEA8F }, { "moon", 0xE708 }, { "sun", 0xE706 }, { "lock", 0xE72E }, { "volume", 0xE767 },
 	{ "battery", 0xE83F }, { "info", 0xE946 }, { "music", 0xE8D6 }, { "person", 0xE77B }, { "gear", 0xE713 },

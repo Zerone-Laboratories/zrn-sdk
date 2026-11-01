@@ -68,12 +68,17 @@ float zanim_value(const struct zanim *a, uint32_t now, bool *running) {
 		return a->to;
 	}
 	if (running) *running = true;
+	if (a->w > 0) {	/* no overshoot, and no jump in speed from the finger */
+		float e = (float)(int32_t)(now - a->start), x = a->from - a->to;
+		return a->to + (x + (a->v0 + a->w * x) * e) * expf(-a->w * e);
+	}
 	float t = (float)(int32_t)(now - a->start) / a->ms;
 	return a->from + (a->to - a->from) * zui_ease_out(t < 0 ? 0 : t);
 }
 
 void zanim_go(struct zanim *a, float to, uint32_t ms, uint32_t now) {
 	a->from = zanim_value(a, now, NULL);
+	a->w = 0;
 	a->to = to;
 	a->start = now;
 	a->ms = ms;
@@ -676,7 +681,7 @@ static float intrinsic_w(zui_node *n) {
 	const struct zui_metrics *m = &n->app->style->m;
 	switch (n->kind) {
 	case ZK_BUTTON: {
-		if (n->icon) return 72;	/* a round button with its word under it */
+		if (n->icon) return m->bar_slot > 0 ? m->bar_slot : 72;	/* a round button */
 		float w = zt_width(n->text, ZT_MEDIUM, m->button_text) + m->button_h * 0.9f;
 		return w < m->button_h * 1.6f ? m->button_h * 1.6f : w;
 	}
@@ -873,7 +878,7 @@ static float layout_node(zui_node *n, float x, float y, float w) {
 		break;
 	}
 	case ZK_BUTTON:
-		h = n->icon ? 66 : m->button_h;
+		h = n->icon ? (m->bar_button > 0 ? m->bar_button + (app->bar_words ? 16 : 0) : 66) : m->button_h;
 		break;
 	case ZK_ITEM:
 		h = (n->subtitle && *n->subtitle) || n->detail ? m->item_h2 : m->item_h;
@@ -915,7 +920,7 @@ void zui_do_layout(zui_app *app, zui_node *page) {
 	page->x = 0;
 	page->y = 0;
 	page->w = app->width;
-	page->header_h = page->compact ? 34 : m->bar_h + (page->tabs ? app->style->tabs_h : 0);
+	page->header_h = page->compact ? 62 : m->bar_h + (page->tabs ? app->style->tabs_h : 0);
 	float y = page->header_h;
 	y = page->tabs ? y + 10 : page->footer ? y + 8 : app->style->page_top(app, page, y, false);
 	float foot = 0;
@@ -1075,6 +1080,13 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 		if (page->footer && page->footer->visible && y >= page->footer->y - 8) {
 			hit = hit_in(page->footer, x, y);
 			app->in_footer = true;
+			for (zui_node *b = page->footer->first; b; b = b->next)
+				if (b->bar && app->style->m.bar_button > 0 && x > app->width - 44 && y >= b->y - 4) {
+					app->bar_words = !app->bar_words;
+					app->laid_out = false;
+					app->dirty = true;
+					return;
+				}
 			app->press_fx = app->press_fy = 0;
 			if (hit) {
 				app->pressed = hit;
@@ -1119,6 +1131,9 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 			zui_node *T = page->tabs;
 			float pos = -dx / app->width;
 			int k = zui_tab_count(T);
+			float dt = (float)(int32_t)(time - app->last_t);
+			if (dt > 0) app->swipe_v = app->swipe_v * 0.3f + (-(x - app->last_x) / app->width / dt) * 0.7f;
+			app->last_t = time;
 			zanim_set(&T->knob, pos);
 			T->tab_prev = ((T->tab_cur + (pos > 0 ? 1 : -1)) % k + k) % k;
 			app->last_x = x;
@@ -1152,8 +1167,13 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 	if (app->swiping) {
 		app->swiping = false;
 		zui_node *T = page->tabs;
-		float pos = T->knob.to;
-		zui_tabs_step(T, pos > 0.25f ? 1 : pos < -0.25f ? -1 : 0);
+		float pos = T->knob.to, v = app->swipe_v, sw = 50.0f / app->width, fl = 0.3f / app->width;
+		/* as ZrnMetroCore's pivots: 50 points, or 0.3 points a ms, turn to the next */
+		zui_tabs_step(T, v > fl || (pos > sw && v >= -fl) ? 1 : v < -fl || (pos < -sw && v <= fl) ? -1 : 0);
+		T->knob.v0 = v;
+		T->knob.w = 0.018f;
+		T->knob.ms = 420;
+		app->swipe_v = 0;
 		return;
 	}
 	if (app->drag_slider) {
@@ -1454,6 +1474,8 @@ static void draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint3
 	switch (n->kind) {
 	case ZK_COLUMN: case ZK_ROW:
 		if (n->bar) zg_rect(0, n->y - 4, app->width, app->height - n->y + 4, 0, pal.surface2);
+		if (n->bar && app->style->m.bar_button > 0)	/* WP's three dots: open it for the words */
+			for (int d = 0; d < 3; d++) zg_circle(app->width - 26 + d * 7, n->y + 6, 1.5f, pal.text);
 		draw_children(app, n, &xf, now);
 		break;
 	case ZK_FOOTER:
@@ -1638,7 +1660,13 @@ void zui_draw(zui_app *app, uint32_t now) {
 		zui_do_layout(app, page);
 		app->laid_out = true;
 	}
-	if (app->trans_to) {
+	if (!app->open_at) app->open_at = getenv("ZUI_NO_OPEN") ? now - 100000 : (now ? now : 1);
+	float opened = (float)(int32_t)(now - app->open_at);
+	if (!app->trans_to && st->turn_in_ms > 0 && opened < st->transition_ms - st->turn_in_ms) {
+		/* the app opens as the second half of a page turn, forward */
+		draw_page(app, page, now, 1, (opened + st->turn_in_ms) / st->transition_ms, 1);
+		app->dirty = true;
+	} else if (app->trans_to) {
 		float t = (float)(int32_t)(now - app->trans_start) / st->transition_ms;
 		t = t < 0 ? 0 : t > 1 ? 1 : t;
 		/* the page on top is drawn last: going forward the new one, going back the old one */

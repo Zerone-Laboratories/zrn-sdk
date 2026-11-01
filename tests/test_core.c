@@ -207,6 +207,7 @@ static void test_list_tabs_image(const char *dir) {
 }
 
 int main(int argc, char **argv) {
+	setenv("ZUI_NO_OPEN", "1", 1);	/* one frame at a time: not the opening turn */
 	const char *dir = argc > 1 ? argv[1] : "/tmp";
 	test_layout_and_taps("dotmatrix");
 	test_layout_and_taps("metro");

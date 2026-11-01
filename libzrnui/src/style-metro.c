@@ -53,20 +53,14 @@ static float page_top(zui_app *app, zui_node *page, float y, bool draw) {
 static void header(zui_app *app, zui_node *page, uint32_t now) {
 	(void)now;
 	struct zui_palette pal = app->style->palette(app);
-	zg_rect(0, 0, app->width, page->compact ? 34 : M.bar_h, 0, pal.bg);
+	zg_rect(0, 0, app->width, page->compact ? 62 : M.bar_h, 0, pal.bg);
 	if (page->compact) {
-		/* a person's name, as Messaging has it, and a line under it */
-		char *caps2 = upper(app->title);
-		free(caps2);
-		/* WhatsApp's: the name in capitals, and after it how they are */
-		char *name = upper(page->text);
-		struct zt_layout *N = zt_slot_get(&page->title_slot[0], name, ZT_STRONG, 13, app->width - 2 * M.margin, 1);
-		free(name);
-		zt_draw(N, M.margin, 9, pal.text);
-		if (page->subtitle && *page->subtitle) {
-			float x = M.margin + N->w;
-			zt_draw(zt_slot_get(&page->t[1], page->subtitle, ZT_REGULAR, 13, app->width - x - M.margin, 1), x + 2, 9, pal.text2);
-		}
+		/* a person: their picture, their name large, how they are under it */
+		zui_draw_leading(app, page, M.margin, 8, 46, 0, 0xffffffff);
+		float x = M.margin + 46 + 10, room = app->width - x - M.margin;
+		zt_draw(zt_slot_get(&page->title_slot[0], page->text, ZT_LIGHT, 24, room, 1), x, 4, pal.text);
+		if (page->subtitle && *page->subtitle)
+			zt_draw(zt_slot_get(&page->t[1], page->subtitle, ZT_REGULAR, 13, room, 1), x, 36, pal.text2);
 		return;
 	}
 	char *caps = upper(app->title), *title = lower(page->text);
@@ -94,13 +88,16 @@ static void button(zui_app *app, zui_node *n, float press) {
 	float x = n->x, w = n->w, y = n->y, h = M.button_h;
 	bool down = press > 0.5f;
 	if (n->icon) {
+		/* WP's action bar at this width: a 36 point ring on a 57 point slot */
 		float cx = x + w / 2, cy = y + 22;
 		uint32_t c = n->enabled ? pal.text : pal.text2;
-		if (down) zg_circle(cx, cy, 22, c);
-		else zg_ring(cx, cy, 22, 2, c);
-		zui_icon(n->icon, cx - 12, cy - 12, 24, 2, down ? 0x000000ff : c);
-		struct zt_layout *W = zt_slot_get(&n->t[0], n->text, ZT_REGULAR, 11.5f, w, 1);
-		zt_draw(W, x + (w - W->w) / 2, y + 48, c);
+		if (down) zg_circle(cx, cy, 18, c);
+		else zg_ring(cx, cy, 18, 2, c);
+		zui_icon(n->icon, cx - 10, cy - 10, 20, 2, down ? 0x000000ff : c);
+		if (app->bar_words) {
+			struct zt_layout *W = zt_slot_get(&n->t[0], n->text, ZT_REGULAR, 11.5f, w, 1);
+			zt_draw(W, x + (w - W->w) / 2, y + 42, c);
+		}
 		return;
 	}
 	uint32_t edge = n->variant == ZUI_DANGER ? pal.danger : pal.text;
@@ -156,16 +153,23 @@ static void tabs(zui_app *app, zui_node *n, float pos) {
 /* Messaging's: theirs in the accent with a tail at the top left, yours a darker
  * shade with one at the bottom right */
 static void tail(zui_app *app, zui_node *n, uint32_t c) {
-	float x0 = n->mine ? n->x + n->w - 12 : n->x;
-	float top = n->mine ? n->y + n->h : n->y;
-	for (int i = 0; i < 12; i += 2) {
-		float len = n->mine ? (12 - i) * 0.67f : (12 - i) * 0.67f;
-		zg_rect(x0 + (n->mine ? i : 0) + (n->mine ? 0 : i), n->mine ? top : top + 8 - len, 2, len, 0, c);
-	}
+	/* 0.5 points into the bubble, so no seam shows between them */
+	if (n->mine) zg_wedge(n->x + n->w - 12, n->y + n->h - 0.5f, 12, 8.5f, true, false, c);
+	else zg_wedge(n->x, n->y, 12, 8.5f, false, true, c);
 	(void)app;
 }
+static float lin(int v) { float c = v / 255.0f; return c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f); }
+/* the accent, darkened only as far as white type on it needs: 4.5 to 1 */
+static uint32_t legible(uint32_t c) {
+	for (int i = 0; i < 20; i++) {
+		float l = 0.2126f * lin((c >> 24) & 255) + 0.7152f * lin((c >> 16) & 255) + 0.0722f * lin((c >> 8) & 255);
+		if (1.05f / (l + 0.05f) >= 4.5f) break;
+		c = zc_mix(c, 0x000000ff, 0.05f);
+	}
+	return c;
+}
 static void bubble(zui_app *app, zui_node *n) {
-	uint32_t a = zc_rgb(app->accent), c = n->mine ? zc_mix(a, 0x000000ff, 0.5f) : a;
+	uint32_t a = legible(zc_rgb(app->accent)), c = n->mine ? zc_mix(a, 0x000000ff, 0.5f) : a;
 	tail(app, n, c);
 	zg_rect(n->x, n->y + 8, n->w, n->h - 8, 0, c);
 }
@@ -421,6 +425,7 @@ const struct zui_style zui_style_metro = {
 	},
 	.line_spacing = 1.25f,
 	.transition_ms = 720,
+	.turn_in_ms = 330,
 	.palette = metro_palette,
 	.m = {
 		.margin = 16, .gap = 12, .card_r = 0, .card_pad = 0, .section_gap = 10,
@@ -428,6 +433,7 @@ const struct zui_style zui_style_metro = {
 		.item_h = 52, .item_h2 = 66, .item_title = 21, .item_sub = 13, .icon_tile = 0,
 		.button_h = 40, .button_r = 0, .button_text = 14.5f,
 		.field_h = 44, .field_r = 0,
+		.bar_slot = 57, .bar_button = 44,
 		.bar_h = 108, .large_title_h = 0,
 	},
 	.header = header,

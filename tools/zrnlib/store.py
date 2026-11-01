@@ -196,7 +196,7 @@ def listing(arch):
         if not rel and not have:
             continue
         out.append({"id": app.get("id"), "name": app.get("name"), "summary": app.get("summary"),
-                    "author": app.get("author"), "licence": app.get("licence"), "source": app.get("source"),
+                    "author": app.get("author"), "licence": app.get("licence"), "source": app.get("source"), "icon_b64": app.get("icon_b64", ""),
                     "version": rel["version"] if rel else "", "size": rel.get("size", 0) if rel else 0,
                     "permissions": rel.get("permissions", []) if rel else [],
                     "installed": have or "", "update": bool(rel and have and _vkey(rel["version"]) > _vkey(have))})

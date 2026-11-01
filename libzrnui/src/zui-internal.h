@@ -55,6 +55,7 @@ void zg_rect(float x, float y, float w, float h, float r, uint32_t rgba);
 void zg_border(float x, float y, float w, float h, float r, float width, uint32_t rgba);
 void zg_shadow(float x, float y, float w, float h, float r, float blur, uint32_t rgba);
 void zg_line(float x0, float y0, float x1, float y1, float width, uint32_t rgba);
+void zg_wedge(float x, float y, float w, float h, bool right, bool bottom, uint32_t rgba);
 void zg_circle(float cx, float cy, float radius, uint32_t rgba);
 void zg_ring(float cx, float cy, float radius, float width, uint32_t rgba);
 /* an arc of a circle, as short strokes: angles in degrees, 0 = right, clockwise */
@@ -134,7 +135,7 @@ struct zui_list_state {
 };
 
 /* something moving from one value to another over time */
-struct zanim { float from, to; uint32_t start, ms; };
+struct zanim { float from, to; uint32_t start, ms; float v0, w; };	/* w: a spring, per ms; 0: eased */
 float zanim_value(const struct zanim *a, uint32_t now, bool *running);
 void zanim_go(struct zanim *a, float to, uint32_t ms, uint32_t now);
 void zanim_set(struct zanim *a, float value);
@@ -215,6 +216,9 @@ struct zui_app {
 	bool quit_after_trans;
 	/* the finger */
 	bool touching, dragging, scrolling_page, swiping;
+	bool bar_words;	/* the action bar is open, words under its buttons */
+	float swipe_v;	/* tabs under the finger, of a screen per ms */
+	uint32_t open_at;	/* the first frame: the app turns in */
 	bool active;
 	float paint_scale;
 	int firing;		/* inside a handler: what it destroys is freed after it */
@@ -297,10 +301,12 @@ struct zui_metrics {
 	float item_h, item_h2, item_title, item_sub, icon_tile;
 	float button_h, button_r, button_text;
 	float field_h, field_r;
+	float bar_slot, bar_button;	/* an action bar's round button: its width and height; 0: with its word always */
 	float bar_h;	/* zrnCoolStyle: the bar along the top; Metro: the fixed header */
 	float large_title_h;
 };
 struct zui_style {
+	float turn_in_ms;	/* when a page turn's incoming half begins; 0: an app just appears */
 	const char *name;
 	const char *fonts[ZT_FONTS];
 	float line_spacing;
