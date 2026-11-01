@@ -7,6 +7,7 @@
  * the finger; pages turn on their left edge, row after row (the turnstile).
  * Numbers are ZrnMetroCore's (ztmetro/core/zrnmetrocore.c).
  */
+#define _GNU_SOURCE
 #include <ctype.h>
 #include <math.h>
 #include <stdio.h>
@@ -52,15 +53,20 @@ static float page_top(zui_app *app, zui_node *page, float y, bool draw) {
 static void header(zui_app *app, zui_node *page, uint32_t now) {
 	(void)now;
 	struct zui_palette pal = app->style->palette(app);
-	zg_rect(0, 0, app->width, M.bar_h, 0, pal.bg);
+	zg_rect(0, 0, app->width, page->compact ? 34 : M.bar_h, 0, pal.bg);
 	if (page->compact) {
 		/* a person's name, as Messaging has it, and a line under it */
 		char *caps2 = upper(app->title);
-		zt_draw(zt_slot_get(&page->title_slot[1], caps2, ZT_STRONG, 11.5f, app->width - 2 * M.margin, 1), M.margin, 12, pal.text);
 		free(caps2);
-		zt_draw(zt_slot_get(&page->title_slot[0], page->text, ZT_LIGHT, 28, app->width - 2 * M.margin, 1), M.margin, 40, pal.text);
-		if (page->subtitle && *page->subtitle)
-			zt_draw(zt_slot_get(&page->t[1], page->subtitle, ZT_REGULAR, 13, app->width - 2 * M.margin, 1), M.margin, 80, pal.text2);
+		/* WhatsApp's: the name in capitals, and after it how they are */
+		char *name = upper(page->text);
+		struct zt_layout *N = zt_slot_get(&page->title_slot[0], name, ZT_STRONG, 13, app->width - 2 * M.margin, 1);
+		free(name);
+		zt_draw(N, M.margin, 9, pal.text);
+		if (page->subtitle && *page->subtitle) {
+			float x = M.margin + N->w;
+			zt_draw(zt_slot_get(&page->t[1], page->subtitle, ZT_REGULAR, 13, app->width - x - M.margin, 1), x + 2, 9, pal.text2);
+		}
 		return;
 	}
 	char *caps = upper(app->title), *title = lower(page->text);
@@ -119,22 +125,31 @@ static void toggle(zui_app *app, zui_node *n, float x, float y, float k) {
 	zg_rect(x + 1 + k * 40, y - 1, 12, 26, 0, pal.text);
 }
 
-/* Pivot: the tab in front's title, the next ones grey after it, going round */
+/* Pivot: the title in front, the next ones grey after it, going round both ways;
+ * the titles move by a whole title as the tab under them moves by a screen */
 static void tabs(zui_app *app, zui_node *n, float pos) {
 	struct zui_palette pal = app->style->palette(app);
 	int count = zui_tab_count(n), cur = n->tab_cur;
 	float frac = pos - (float)cur;
-	struct zt_layout *C = zt_slot_get(&n->t[1], app->title, ZT_STRONG, 11.5f, 0, 1);
-	(void)C;
+	zg_rect(0, 24, app->width, M.bar_h - 24, 0, pal.bg);
+	struct zt_layout *L[8];
+	for (int k = 0; k < count; k++) {
+		zui_node *t = zui_tab_at(n, k);
+		L[k] = zt_slot_get(&t->title_slot[0], t->text, ZT_LIGHT, M.title, 0, 0);
+	}
 	float at = M.margin - 3;
-	zui_node *front = zui_tab_at(n, cur);
-	struct zt_layout *F = zt_slot_get(&front->title_slot[0], front->text, ZT_LIGHT, M.title, 0, 0);
-	at -= frac * (F->w + 16);
-	for (int k = 0; k < 4 && at < app->width; k++) {
-		zui_node *t = zui_tab_at(n, (cur + k) % count);
-		struct zt_layout *L = zt_slot_get(&t->title_slot[k == 0 ? 0 : 1], t->text, ZT_LIGHT, M.title, 0, 0);
-		zt_draw(L, at, 20, k == 0 ? pal.text : pal.text3);
-		at += L->w + 16;
+	if (frac > 0) at -= frac * (L[cur]->w + 16);
+	else if (frac < 0) at += -frac * (L[(cur + count - 1) % count]->w + 16);
+	/* one behind, off to the left, when going back */
+	if (frac < 0) {
+		int p = (cur + count - 1) % count;
+		zt_draw(L[p], at - L[p]->w - 16, 20, pal.text3);
+	}
+	for (int k = 0; k < 8 && at < app->width; k++) {
+		int i = (cur + k) % count;
+		float near = k == 0 ? 1 - fabsf(frac) : (k == 1 && frac > 0 ? frac : 0);
+		zt_draw(L[i], at, 20, zc_mix(pal.text3, pal.text, near));
+		at += L[i]->w + 16;
 	}
 }
 
@@ -163,8 +178,7 @@ static void dot_bubble(zui_app *app, zui_node *n) {
 
 static void foot(zui_app *app, zui_node *n) {
 	struct zui_palette pal = app->style->palette(app);
-	bool grey = n->parent && n->parent->tabs;
-	zg_rect(0, n->y - 8, app->width, app->height - n->y + 8, 0, grey ? pal.surface2 : pal.bg);
+	zg_rect(0, n->y - 8, app->width, app->height - n->y + 8, 0, pal.bg);
 }
 
 /* a row with a tile: Messaging's thread row */
@@ -287,6 +301,31 @@ static void field(zui_app *app, zui_node *n, uint32_t now) {
 	if (n->inline_hint && (!n->text || !*n->text) && !n->focused) {
 		struct zt_layout *P = zt_slot_get(&n->t[1], n->subtitle ? n->subtitle : "", ZT_REGULAR, 16, w - 20, 1);
 		zt_draw(P, x + 10, by + (h - P->line_h) / 2, dotted ? pal.text2 : 0x595959ff);
+	}
+	if (n->multiline) {
+		h = n->h;
+		zg_rect(x, by, w, h, 0, n->focused ? 0xffffffff : 0xcfcfcfff);
+		if (dotted) { zg_rect(x, by, w, h, 0, 0x000000ff); zg_border(x, by, w, h, 0, 1.2f, pal.text); }
+		/* the tail, as WhatsApp's box has at its bottom right */
+		for (int i = 0; i < 12; i += 2)
+			zg_rect(x + w - 12 + i, by + h, 2, (12 - i) * 0.67f, 0, dotted ? pal.text : n->focused ? 0xffffffff : 0xcfcfcfff);
+		char *t = NULL;
+		const char *txt = n->text ? n->text : "";
+		if (n->focused) {
+			if (asprintf(&t, "%s|", txt) > 0) txt = t;
+		}
+		if (*txt) {
+			struct zt_layout *T = zt_slot_get(&n->t[0], txt, ZT_REGULAR, 16, w - 20, 0);
+			float over = T->h + 18 - h;
+			if (over > 0) zg_clip(x, by + 2, w, h - 4);
+			zt_draw(T, x + 10, by + 9 - (over > 0 ? over : 0), ink);
+			if (over > 0) zg_noclip();
+		} else {
+			struct zt_layout *P = zt_slot_get(&n->t[1], n->subtitle ? n->subtitle : "", ZT_REGULAR, 16, w - 20, 1);
+			zt_draw(P, x + 10, by + (h - P->line_h) / 2, dotted ? pal.text2 : 0x595959ff);
+		}
+		free(t);
+		return;
 	}
 	float avail = w - 16, end = 0;
 	if (n->text && *n->text) {

@@ -254,7 +254,7 @@ static void changed_height(zui_node *n, int row, float delta) {
 	 * another height than guessed */
 	if (n->y + L->y[row] < scroll + page->header_h && !page->stick_end) {
 		page->scroll += delta;
-		page->down_fix += delta;
+		n->app->down_scroll += delta;	/* or the next move of the finger undoes it */
 	}
 }
 
@@ -276,6 +276,7 @@ static void bind_row(zui_node *n, int row) {
 	L->slot[at] = s;
 	L->slot_row[at] = row;
 	if (L->bind) L->bind(row, s, L->data);
+	if (row >= L->arrive_from && L->arrive_from > 0) zanim_go(&s->arrive, 1, 260, zui_now()), s->arrive.from = 0;
 	float h = zui_layout_at(s, n->x, n->y + L->y[row], n->w);
 	app->laid_out = was;
 	changed_height(n, row, h - (L->y[row + 1] - L->y[row]));
@@ -320,7 +321,7 @@ void zui_list_ensure(zui_node *n, uint32_t now) {
 		}
 	}
 	/* near the start: the app may have more to put there */
-	if (first < 15 && !L->asked && n->cb) {
+	if (first < 45 && !L->asked && n->cb) {
 		L->asked = true;
 		zui_fire(n, ZUI_EVENT_CHANGE);
 	}
@@ -346,6 +347,7 @@ float zui_list_layout(zui_node *n, float x, float y, float w) {
 ZUI_EXPORT void zui_list_set_count(zui_node *n, int count) {
 	struct zui_list_state *L = n->list;
 	for (int i = 0; i < ZUI_LIST_SLOTS; i++) if (L->slot[i]) slot_drop(n, i);
+	L->arrive_from = 0;
 	L->count = count < 0 ? 0 : count;
 	L->asked = false;
 	rebuild_prefix(L);
@@ -357,6 +359,7 @@ ZUI_EXPORT void zui_list_set_count(zui_node *n, int count) {
 ZUI_EXPORT void zui_list_append(zui_node *n, int k) {
 	struct zui_list_state *L = n->list;
 	int old = L->count;
+	L->arrive_from = old;
 	L->y = realloc(L->y, sizeof(float) * (size_t)(old + k + 1));
 	L->count = old + k;
 	for (int i = old; i < old + k; i++)
@@ -380,6 +383,7 @@ ZUI_EXPORT void zui_list_prepend(zui_node *n, int k) {
 	L->y = y;
 	L->count = old + k;
 	L->asked = false;
+	L->arrive_from = 0;
 	for (int i = 0; i < ZUI_LIST_SLOTS; i++)
 		if (L->slot[i]) L->slot_row[i] += k;
 	zui_node *page;
@@ -438,6 +442,34 @@ int zui_tab_count(const zui_node *tabs) {
 	return k;
 }
 ZUI_EXPORT int zui_tabs_current(zui_node *tabs) { return tabs->tab_cur; }
+/* one tab along, going round; the slide carries on from where it is */
+void zui_tabs_step(zui_node *tabs, int dir) {
+	int k = zui_tab_count(tabs), cur = tabs->tab_cur;
+	zui_app *app = tabs->app;
+	zui_node *page = tabs->parent;
+	uint32_t now = zui_now();
+	float off = zanim_value(&tabs->knob, now, NULL);
+	if (dir) {
+		int i = ((cur + dir) % k + k) % k;
+		zui_node *old = zui_tab_at(tabs, cur), *nw = zui_tab_at(tabs, i);
+		old->scroll = page->scroll;
+		tabs->tab_cur = i;
+		tabs->tab_prev = cur;
+		page->scroll = nw->scroll;
+		page->vel = 0;
+		app->fling = false;
+		app->laid_out = false;
+		off -= (float)dir;
+		zui_fire(tabs, ZUI_EVENT_CHANGE);
+	}
+	tabs->knob.from = off;
+	tabs->knob.to = 0;
+	tabs->knob.start = now;
+	tabs->knob.ms = 260;
+	zanim_go(&tabs->focus_anim, 0, 260, now);
+	app->dirty = true;
+}
+
 ZUI_EXPORT void zui_tabs_select(zui_node *tabs, int i) {
 	int count = zui_tab_count(tabs);
 	if (i < 0 || i >= count) i = tabs->tab_cur;

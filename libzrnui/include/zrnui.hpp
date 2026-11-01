@@ -114,6 +114,8 @@ public:
 	Node &set_emphasis(bool on) { zui_set_emphasis(n_, on); return *this; }
 	Node &set_align(int a) { zui_set_align(n_, a); return *this; }
 
+	Node &set_multiline(bool m) { zui_field_set_multiline(n_, m); return *this; }
+	Node &set_bar(bool b) { zui_set_bar(n_, b); return *this; }
 	Node &set_compact(bool c) { zui_page_set_compact(n_, c); return *this; }
 	/* changing it; each returns the node, so they chain */
 	Node &set_text(const std::string &s) { zui_set_text(n_, s.c_str()); return *this; }

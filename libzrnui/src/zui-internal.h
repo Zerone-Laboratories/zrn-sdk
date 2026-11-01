@@ -113,7 +113,7 @@ struct zui_pixmap { int w, h, refs; uint8_t *rgba; unsigned tex, gen; };
 
 #define ZUI_LIST_SLOTS 48
 struct zui_list_state {
-	int count, want0, want1, last_first;
+	int count, want0, want1, last_first, arrive_from;
 	bool asked;
 	float row_h, *y;	/* y[row], y[count] the end */
 	zui_list_height height;
@@ -164,6 +164,8 @@ struct zui_node {
 	bool sharp, emphasis, mine, compact, inline_hint;
 	float radius;
 	int align;
+	bool multiline, bar;
+	struct zanim arrive;	/* a new row rising in */
 	char *badge, *monogram;
 	struct zui_list_state *list;
 };
@@ -194,6 +196,8 @@ struct zui_app {
 	/* the finger */
 	bool touching, dragging, scrolling_page, swiping;
 	bool active;
+	int firing;		/* inside a handler: what it destroys is freed after it */
+	zui_node *grave;
 	bool in_footer;
 	float down_x, down_y, last_x, last_y, down_scroll;
 	uint32_t last_t;
@@ -237,6 +241,7 @@ zui_node *zui_node_new_kind(zui_node *parent, int kind);
 float zui_layout_at(zui_node *n, float x, float y, float w);
 void zui_move_children(zui_node *n, float dy);
 void zui_list_ensure(zui_node *n, uint32_t now);
+void zui_tabs_step(zui_node *tabs, int dir);
 float zui_list_layout(zui_node *n, float x, float y, float w);
 void zui_list_free(zui_node *n);
 int zui_child_index(const zui_node *c);

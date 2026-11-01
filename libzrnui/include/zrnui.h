@@ -173,6 +173,10 @@ int zui_tabs_current(zui_node *tabs);
 /* A row fixed at the bottom of a page, over its list; a field in it asks the
  * shell to lift the window with the keyboard. */
 zui_node *zui_footer(zui_node *page);
+/* a field that grows with its lines to four, then scrolls; Enter is a new line */
+void zui_field_set_multiline(zui_node *field, bool multiline);
+/* a row across the whole screen on the bar colour: an application bar */
+void zui_set_bar(zui_node *row, bool bar);
 /* A speech bubble in a list: as wide as what is in it, on the end if `mine`. */
 zui_node *zui_bubble(zui_node *parent, bool mine);
 /* A page's title as given and smaller, with a line under it (a person's name) */
