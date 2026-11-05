@@ -19,6 +19,16 @@ check: $(TESTBIN)/test_core
 	cd rust && cargo test --offline --quiet
 	c++ -std=c++17 -fsyntax-only -Wall -Wextra -Ilibzrnui/include examples/hello-cpp/main.cpp
 
+# run: the settings demo in a window on this desktop (a Wayland session; no
+# virtual machine, no nested compositor). make run [STYLE=metro|dotmatrix]
+# It is also what CLion's "run" configuration for this Makefile target does.
+ARCH = $(shell uname -m)
+DEMO = examples/settings-c
+run: all
+	$(ZRN) -C $(DEMO) build
+	$(if $(STYLE),ZUI_STYLE=$(STYLE) )LD_LIBRARY_PATH=$(CURDIR)/libzrnui/build \
+		$(DEMO)/build/$(ARCH)/bin/zrn-example-settings
+
 examples: all
 	for e in $(EXAMPLES); do $(ZRN) -C examples/$$e pack || exit 1; done
 
@@ -52,4 +62,4 @@ clean:
 	$(MAKE) -C libzrnui clean
 	rm -rf build
 
-.PHONY: all check examples renders clean install
+.PHONY: all check examples renders clean install run

@@ -81,6 +81,22 @@ The full API, the style rules and the package format are in
 [DESIGN.md](DESIGN.md); the skill coding agents get is
 [templates/agents/SKILL.md](templates/agents/SKILL.md).
 
+## What a page can hold
+
+Items, switches, sliders, fields, buttons, long lists and pivots (`zui_tabs`),
+and what Windows Phone 8.1 had besides: check boxes and radio buttons
+(`zui_check`, `zui_radio`), a password box and suggestions under a field,
+a progress ring, a list picker that opens in place (`zui_picker`), date and
+time pickers, tiles that turn over (`zui_tiles`, `zui_tile_set_live`), the
+Hub or panorama (`zui_hub`), press and hold (`zui_set_hold`), and over the
+page a menu, a dialog and a jump list (`zui_menu`, `zui_dialog`,
+`zui_jump_list`). Each is documented in `libzrnui/include/zrnui.h`;
+`examples/settings-c` shows them on its Widgets pages. They are in C and C++;
+the Rust and Python bindings do not have them yet.
+
+`make run` (or the `run` target in CLion) opens the settings example in a
+window on a Wayland desktop, with no virtual machine: `make run STYLE=dotmatrix`.
+
 ## Looking at your app without a phone
 
 ```

@@ -65,10 +65,13 @@ static void header(zui_app *app, zui_node *page, uint32_t now) {
 	}
 	char *caps = upper(app->title), *title = lower(page->text);
 	struct zt_layout *C = zt_slot_get(&page->title_slot[1], caps, ZT_STRONG, 11.5f, app->width - 2 * M.margin, 1);
-	zt_draw(C, M.margin, 12, pal.text);
+	/* a hub's title goes by more slowly than its sections: a panorama */
+	float shift = 0;
+	if (page->hub) zui_hub_title_shift(app, page, &shift);
+	zt_draw(C, M.margin + shift, 12, pal.text);
 	if (!page->tabs) {
 		struct zt_layout *T = zt_slot_get(&page->title_slot[0], title, ZT_LIGHT, M.title, 0, 0);
-		zt_draw(T, M.margin - 3, 20, pal.text);
+		zt_draw(T, M.margin - 3 + shift, 20, pal.text);
 	}
 	free(caps);
 	free(title);
@@ -98,6 +101,12 @@ static void button(zui_app *app, zui_node *n, float press) {
 			struct zt_layout *W = zt_slot_get(&n->t[0], n->text, ZT_REGULAR, 11.5f, w, 1);
 			zt_draw(W, x + (w - W->w) / 2, y + 42, c);
 		}
+		return;
+	}
+	if (n->variant == ZUI_LINK) {
+		/* a hyperlink: the accent's type, no frame; pressed it takes the text colour */
+		struct zt_layout *K = zt_slot_get(&n->t[0], n->text, ZT_REGULAR, 16, w, 1);
+		zt_draw(K, x + (w - K->w) / 2, y + (h - K->line_h) / 2, down ? pal.text : pal.accent_text);
 		return;
 	}
 	uint32_t edge = n->variant == ZUI_DANGER ? pal.danger : pal.text;
@@ -377,13 +386,27 @@ static void field(zui_app *app, zui_node *n, uint32_t now) {
 		return;
 	}
 	float avail = w - 16, end = 0;
-	if (n->text && *n->text) {
-		struct zt_layout *T = zt_slot_get(&n->t[0], n->text, ZT_REGULAR, 17, n->focused ? 0 : avail, n->focused ? 0 : 1);
+	char *dots_text = NULL;
+	const char *shown = n->text;
+	if (n->password && n->text && *n->text) {
+		/* one bullet for each character, not each byte */
+		size_t chars = 0;
+		for (const char *c = n->text; *c; c++) chars += ((unsigned char)*c & 0xc0) != 0x80;
+		const char *bullet = dotted ? "*" : "\xe2\x80\xa2";
+		size_t bl = strlen(bullet);
+		dots_text = malloc(chars * bl + 1);
+		for (size_t i = 0; i < chars; i++) memcpy(dots_text + i * bl, bullet, bl);
+		dots_text[chars * bl] = 0;
+		shown = dots_text;
+	}
+	if (shown && *shown) {
+		struct zt_layout *T = zt_slot_get(&n->t[0], shown, ZT_REGULAR, 17, n->focused ? 0 : avail, n->focused ? 0 : 1);
 		float shift = n->focused && T->w > avail - 4 ? T->w - (avail - 4) : 0;
 		zt_draw_clipped(T, x + 8 - shift, by + (h - T->line_h) / 2, ink, shift, shift + avail);
 		end = T->w - shift;
 	}
 	if (n->focused) zg_rect(x + 8 + end + 1, by + 8, 1.5f, h - 16, 0, ink);
+	free(dots_text);
 }
 
 static void busy(zui_app *app, uint32_t now) {
@@ -405,7 +428,7 @@ static void toast(zui_app *app, const char *text, float shown) {
 /* Windows Phone's tilt: what is under the finger leans toward it */
 static void press_xf(zui_app *app, zui_node *n, float amount, float fx, float fy, struct zg_xf *xf) {
 	(void)app;
-	if (n->kind == ZK_BUTTON || n->kind == ZK_SLIDER || n->kind == ZK_FIELD) return;
+	if (n->kind == ZK_BUTTON || n->kind == ZK_SLIDER || n->kind == ZK_FIELD || n->kind == ZK_PICKER) return;
 	float cx = n->x + n->w / 2, cy = n->y + n->h / 2;
 	fx = fx < -1 ? -1 : fx > 1 ? 1 : fx;
 	fy = fy < -1 ? -1 : fy > 1 ? 1 : fy;

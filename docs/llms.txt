@@ -1,6 +1,6 @@
 # zrn-sdk
 
-> The ztOS app SDK: libzrnui (a C UI library drawn on the GPU with GLES2, in Metro or DotMatrix), bindings for C++, Rust and Python over the same C ABI, the .zexec single-file app package (a #!/usr/bin/env zrn-exec line plus a zip, with a detached minisign signature), and the `zrn` CLI. Apps are pages of sections, cards, items, switches, sliders, fields and buttons; libzrnui does layout, scrolling, touch and page transitions. Every `zrn` command accepts --json.
+> The ztOS app SDK: libzrnui (a C UI library drawn on the GPU with GLES2, in Metro or DotMatrix), bindings for C++, Rust and Python over the same C ABI, the .zexec single-file app package (a #!/usr/bin/env zrn-exec line plus a zip, with a detached minisign signature), and the `zrn` CLI. Apps are pages of sections, cards, items, switches, sliders, fields, buttons, check boxes, pickers, tiles and hubs, with menus, dialogs and jump lists over them; libzrnui does layout, scrolling, touch and page transitions. Every `zrn` command accepts --json.
 
 ## Start here
 

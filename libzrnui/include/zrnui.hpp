@@ -25,17 +25,20 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "zrnui.h"
 
 namespace zrn::ui {
 
-enum class Variant { Primary = ZUI_PRIMARY, Tonal = ZUI_TONAL, Plain = ZUI_PLAIN, Danger = ZUI_DANGER };
+enum class Variant { Primary = ZUI_PRIMARY, Tonal = ZUI_TONAL, Plain = ZUI_PLAIN, Danger = ZUI_DANGER, Link = ZUI_LINK };
 
 namespace detail {
 using Handler = std::function<void(zui_node *)>;
 inline void call(zui_node *n, void *data) { (*static_cast<Handler *>(data))(n); }
 inline void drop(void *data) { delete static_cast<Handler *>(data); }
+inline void call_hold(zui_node *, void *data) { (*static_cast<std::function<void()> *>(data))(); }
+inline void drop_hold(void *data) { delete static_cast<std::function<void()> *>(data); }
 inline void attach(zui_node *n, Handler h) {
 	if (!h) return;
 	zui_set_handler(n, call, new Handler(std::move(h)), drop);
@@ -94,6 +97,73 @@ public:
 			});
 		return f;
 	}
+
+	/* ---- what Windows Phone 8.1 had (see zrnui.h) ---- */
+	Node check(const std::string &title, bool on, std::function<void(bool)> on_change = {}) {
+		Node c(zui_check(n_, title.c_str(), on, nullptr, nullptr));
+		if (on_change) detail::attach(c.n_, [f = std::move(on_change)](zui_node *n) { f(zui_get_on(n)); });
+		return c;
+	}
+	Node radio(const std::string &title, bool on, std::function<void(bool)> on_change = {}) {
+		Node c(zui_radio(n_, title.c_str(), on, nullptr, nullptr));
+		if (on_change) detail::attach(c.n_, [f = std::move(on_change)](zui_node *n) { f(zui_get_on(n)); });
+		return c;
+	}
+	Node ring() { return Node(zui_ring(n_)); }
+	Node &set_password(bool p) { zui_field_set_password(n_, p); return *this; }
+	Node &set_suggestions(const std::vector<std::string> &items) {
+		std::vector<const char *> v;
+		for (auto &s : items) v.push_back(s.c_str());
+		zui_field_set_suggestions(n_, v.data(), static_cast<int>(v.size()));
+		return *this;
+	}
+	Node picker(const std::string &caption, const std::vector<std::string> &options, int selected,
+			std::function<void(int)> on_change = {}) {
+		std::vector<const char *> v;
+		for (auto &s : options) v.push_back(s.c_str());
+		Node p(zui_picker(n_, caption.c_str(), v.data(), static_cast<int>(v.size()), selected, nullptr, nullptr));
+		if (on_change) detail::attach(p.n_, [f = std::move(on_change)](zui_node *n) { f(zui_picker_selected(n)); });
+		return p;
+	}
+	int selected() const { return zui_picker_selected(n_); }
+	Node date_picker(const std::string &title, int year, int month, int day,
+			std::function<void(int, int, int)> on_change = {}) {
+		Node p(zui_date_picker(n_, title.c_str(), year, month, day, nullptr, nullptr));
+		if (on_change)
+			detail::attach(p.n_, [f = std::move(on_change)](zui_node *n) {
+				int y, m, d;
+				zui_date_picker_get(n, &y, &m, &d);
+				f(y, m, d);
+			});
+		return p;
+	}
+	Node time_picker(const std::string &title, int hour, int minute, std::function<void(int, int)> on_change = {}) {
+		Node p(zui_time_picker(n_, title.c_str(), hour, minute, nullptr, nullptr));
+		if (on_change)
+			detail::attach(p.n_, [f = std::move(on_change)](zui_node *n) {
+				int h, m;
+				zui_time_picker_get(n, &h, &m);
+				f(h, m);
+			});
+		return p;
+	}
+	Node tiles() { return Node(zui_tiles(n_)); }
+	Node tile(const std::string &title, const std::string &icon, bool wide = false, std::function<void()> on_tap = {}) {
+		Node t(zui_tile(n_, title.c_str(), icon.c_str(), wide, nullptr, nullptr));
+		if (on_tap) detail::attach(t.n_, [f = std::move(on_tap)](zui_node *) { f(); });
+		return t;
+	}
+	Node &set_live(const std::string &back, int period_ms) { zui_tile_set_live(n_, back.c_str(), period_ms); return *this; }
+	Node hub() { return Node(zui_hub(n_)); }
+	Node hub_section(const std::string &title) { return Node(zui_hub_section(n_, title.c_str())); }
+	Node &set_background(zui_pixmap *pix) { zui_hub_set_background(n_, pix); return *this; }
+	Node &show_section(int i) { zui_hub_show(n_, i); return *this; }
+	/* a press and hold */
+	Node &on_hold(std::function<void()> f) {
+		zui_set_hold(n_, detail::call_hold, new std::function<void()>(std::move(f)), detail::drop_hold);
+		return *this;
+	}
+	Node &scroll_to(double y, bool glide = true) { zui_page_scroll_to(n_, y, glide); return *this; }
 
 	Node footer() { return Node(zui_footer(n_)); }
 	Node tabs() { return Node(zui_tabs(n_)); }
@@ -200,7 +270,40 @@ public:
 		}, new std::function<void()>(std::move(f)));
 	}
 
+	/* ---- over the page: one at a time; f gets the index chosen ---- */
+	void menu(Node anchor, const std::vector<std::string> &items, std::function<void(int)> f) {
+		auto v = cstrs(items);
+		over_ = std::move(f);
+		zui_menu(app_, anchor.get(), v.data(), static_cast<int>(v.size()), &App::chose, this);
+	}
+	void dialog(const std::string &title, const std::string &message, const std::vector<std::string> &buttons,
+			std::function<void(int)> f) {
+		auto v = cstrs(buttons);
+		over_ = std::move(f);
+		zui_dialog(app_, title.c_str(), message.c_str(), v.data(), static_cast<int>(v.size()), &App::chose, this);
+	}
+	void jump_list(const std::vector<std::string> &labels, const std::vector<bool> &live, std::function<void(int)> f) {
+		auto v = cstrs(labels);
+		std::unique_ptr<bool[]> l(new bool[labels.size()]);
+		for (size_t i = 0; i < labels.size(); i++) l[i] = live.empty() || live[i];
+		over_ = std::move(f);
+		zui_jump_list(app_, v.data(), l.get(), static_cast<int>(v.size()), &App::chose, this);
+	}
+	bool overlay_open() { return zui_overlay_open(app_); }
+	void close_overlay() { zui_overlay_close(app_); }
+
 private:
+	static std::vector<const char *> cstrs(const std::vector<std::string> &v) {
+		std::vector<const char *> o;
+		for (auto &s : v) o.push_back(s.c_str());
+		return o;
+	}
+	static void chose(zui_app *, int i, void *d) {
+		auto *a = static_cast<App *>(d);
+		auto f = std::move(a->over_);
+		if (f) f(i);
+	}
+	std::function<void(int)> over_;
 	struct Slot { App *app; int id; bool repeat; std::function<void()> f; };
 	static void fire(void *d) {
 		auto *s = static_cast<Slot *>(d);

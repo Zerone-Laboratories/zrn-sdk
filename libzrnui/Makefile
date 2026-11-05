@@ -12,7 +12,7 @@ VERSION = 0.1.0
 SONAME = libzrnui.so.0
 B = build
 SRC = src/core.c src/gfx.c src/text.c src/icons.c src/style-metro.c src/wl.c \
-	src/extras.c src/offscreen.c protocol/xdg-shell-protocol.c
+	src/extras.c src/widgets.c src/offscreen.c protocol/xdg-shell-protocol.c
 OBJ = $(SRC:%.c=$(B)/%.o)
 
 all: $(B)/libzrnui.so

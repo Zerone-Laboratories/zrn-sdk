@@ -376,7 +376,7 @@ In order of value:
 4. **Migrate ztmetro apps** to libzrnui one by one (Power first: small, then
    Settings), keeping Metro as the style so nothing changes for the user until
    they pick the styles; compare frame cost before and after on the phone.
-   Missing for them: pivots (tabs that swipe), list pickers, menus on hold,
+   Missing for them: (pivots, list pickers, menus on hold, dialogs, tiles and the hub are done)
    round buttons, the custom overlay and DMA-BUF hooks (camera, browser).
 5. **Port Music** (`apps/music`, Python SDK + Qt) to `zrnui` in Python:
    yt-dlp and mpv out of process as now, `app.watch(fd)` for mpv's IPC socket,
@@ -402,4 +402,4 @@ In order of value:
 - The store Worker, Discord commands and workflows are written and
   syntax-checked, not deployed or run on GitHub; the store pipeline was run
   locally end to end (see zrn-apprepo/evidence).
-- Permissions are declared, not enforced. Menus are not there yet. Bidirectional text is not reordered.
+- Permissions are declared, not enforced. Widgets added after round 1: check, radio, password, suggestions, ring, list/date/time pickers, tiles, hub, hold, menu, dialog, jump list (C and C++ only; no WebView, MediaElement, maps or arbitrary-content flyouts; the time picker is 24 hours). Bidirectional text is not reordered.

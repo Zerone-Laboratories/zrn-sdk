@@ -118,6 +118,7 @@ enum zui_kind {
 	ZK_PAGE, ZK_COLUMN, ZK_ROW, ZK_CARD, ZK_SECTION_LABEL, ZK_SPACE,
 	ZK_TEXT, ZK_HEADING, ZK_CAPTION, ZK_BUTTON, ZK_ITEM, ZK_SWITCH,
 	ZK_SLIDER, ZK_PROGRESS, ZK_FIELD, ZK_IMAGE, ZK_LIST, ZK_TABS, ZK_FOOTER, ZK_BUBBLE,
+	ZK_CHECK, ZK_RADIO, ZK_PICKER, ZK_RING, ZK_TILES, ZK_TILE, ZK_HUB, ZK_HUBSEC,
 };
 
 struct zui_pixmap { int w, h, refs; uint8_t *rgba; unsigned tex, gen; };
@@ -190,6 +191,15 @@ struct zui_node {
 	/* a field */
 	int caret, sel_a, sel_b;	/* bytes; caret -1: the end */
 	uint32_t last_tap;
+	/* widgets.c: pickers, tiles, hubs, suggestions; hold */
+	void *ext;
+	zui_node *hub;		/* a page's hub */
+	float scroll_goal;
+	bool scroll_goal_on;
+	zui_cb hold_cb;
+	void *hold_data;
+	zui_free_fn hold_free;
+	bool password;
 };
 
 #define ZUI_MAX_FDS 32
@@ -247,6 +257,15 @@ struct zui_app {
 	struct zui_post *posts;
 	void *post_lock;
 	struct zui_wl *wl;	/* the window, when there is one */
+	/* widgets.c */
+	void *ov;		/* the menu, dialog or picker over the page */
+	zui_node *open_picker;	/* the list picker that is open */
+	int hold_timer;
+	zui_node *hold_node;
+	bool hold_fired, hub_drag;
+	float hub_from;
+	uint32_t hold_since;
+	int n_pickers;
 };
 
 uint32_t zui_now(void);
@@ -262,6 +281,32 @@ void zui_key_text(zui_app *app, const char *utf8);	/* "\b" backspace, "\n" enter
 void zui_step(zui_app *app, uint32_t now);	/* flings and springs */
 const char *zui_data_dir(void);
 void zui_osk(zui_app *app, bool show);
+
+/* widgets.c: what core.c asks of it */
+float zui_widget_layout(zui_node *n, float x, float y, float w);	/* < 0: not a widget of its */
+bool zui_widget_draw(zui_app *app, zui_node *n, const struct zg_xf *xf, uint32_t now);
+bool zui_widget_interactive(const zui_node *n);
+bool zui_widget_activate(zui_app *app, zui_node *n);	/* true: it was one */
+void zui_widget_free(zui_node *n);
+void zui_widgets_free(zui_app *app);
+void zui_widgets_draw_over(zui_app *app, uint32_t now);	/* overlays and suggestions, after the page */
+bool zui_widgets_touch(zui_app *app, int phase, float x, float y, uint32_t time);	/* true: taken */
+bool zui_widgets_back(zui_app *app);	/* true: it closed something */
+bool zui_widgets_animating(zui_app *app, uint32_t now);
+void zui_widgets_step(zui_app *app, uint32_t now);
+float zui_hub_offset(const zui_node *hub);
+void zui_hub_drag(zui_app *app, zui_node *hub, float dx);	/* the finger moved dx from where it went down */
+void zui_hub_release(zui_app *app, zui_node *hub, float velocity);	/* points per ms, + to the right */
+void zui_hub_title_shift(zui_app *app, zui_node *page, float *shift);	/* how far the title has gone */
+void zui_hold_start(zui_app *app, zui_node *n, uint32_t time);
+void zui_hold_cancel(zui_app *app);
+bool zui_hold_on_lift(zui_app *app, uint32_t time, uint32_t down_time);
+void zui_pickers_close_except(zui_app *app, zui_node *keep);
+float zui_node_hub_shift(const zui_node *n);
+bool zui_widgets_page_moving(zui_app *app, zui_node *page, uint32_t now);
+void zui_cb_end(zui_app *app);
+void zui_set_checked(zui_node *n, bool on);
+bool zui_suggest_touch(zui_app *app, float x, float y, float scroll);
 
 /* extras.c */
 zui_node *zui_node_new_kind(zui_node *parent, int kind);

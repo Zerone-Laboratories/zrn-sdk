@@ -308,6 +308,7 @@ static void node_free(zui_node *n) {
 		zui_osk(app, false);
 	}
 	if (n->free_data) n->free_data(n->data);
+	zui_widget_free(n);
 	for (int i = 0; i < 5; i++) zt_slot_free(&n->t[i]);
 	for (int i = 0; i < 2; i++) zt_slot_free(&n->title_slot[i]);
 	free(n->text);
@@ -543,6 +544,11 @@ void zui_fire(zui_node *n, int event) {
 	if (n->cb) n->cb(n, n->data);
 	n->event = ZUI_EVENT_NONE;
 	app->dirty = true;
+	zui_cb_end(app);
+}
+
+/* the end of a handler that began with app->firing++: what it destroyed goes now */
+void zui_cb_end(zui_app *app) {
 	if (--app->firing == 0) {
 		while (app->grave) {
 			zui_node *g = app->grave;
@@ -607,6 +613,7 @@ ZUI_EXPORT void zui_page_set_root(zui_node *page) {
 }
 
 ZUI_EXPORT void zui_back(zui_app *app) {
+	if (zui_widgets_back(app)) return;	/* a menu, a dialog or a picker first */
 	transition_finish(app);
 	zui_node *page = app->page;
 	if (!page) return;
@@ -639,7 +646,9 @@ ZUI_EXPORT void zui_quit(zui_app *app) {
 
 ZUI_EXPORT void zui_app_free(zui_app *app) {
 	if (!app) return;
+	zui_hold_cancel(app);
 	for (int i = 0; i < app->n_pages; i++) node_free(app->pages[i]);
+	zui_widgets_free(app);
 	free(app->pages);
 	free(app->app_id);
 	free(app->title);
@@ -663,7 +672,7 @@ static bool in_card(const zui_node *n) {
 
 /* a row (item, switch) fills a card edge to edge; anything else sits in its padding */
 static bool card_row_kind(int kind) {
-	return kind == ZK_ITEM || kind == ZK_SWITCH;
+	return kind == ZK_ITEM || kind == ZK_SWITCH || kind == ZK_CHECK || kind == ZK_RADIO;
 }
 
 static float text_size(const zui_app *app, int kind) {
@@ -708,7 +717,8 @@ static float layout_node(zui_node *n, float x, float y, float w);
 
 /* things in a card that read as a list: dividers go next to them */
 static bool listy(const zui_node *n) {
-	return n->kind == ZK_ITEM || n->kind == ZK_SWITCH || n->kind == ZK_SLIDER;
+	return n->kind == ZK_ITEM || n->kind == ZK_SWITCH || n->kind == ZK_SLIDER || n->kind == ZK_CHECK ||
+		n->kind == ZK_RADIO;
 }
 
 static float layout_card(zui_node *n, float x, float y, float w, float gap) {
@@ -922,8 +932,11 @@ static float layout_node(zui_node *n, float x, float y, float w) {
 			}
 		}
 		break;
-	default:
+	default: {
+		float r = zui_widget_layout(n, x, y, w);
+		if (r >= 0) h = r;
 		break;
+	}
 	}
 	n->h = h;
 	return h;
@@ -988,13 +1001,14 @@ static bool interactive(const zui_node *n) {
 	if (!n->enabled) return false;
 	switch (n->kind) {
 	case ZK_BUTTON: case ZK_SWITCH: case ZK_SLIDER: case ZK_FIELD: return true;
-	case ZK_ITEM: return n->cb != NULL;
-	case ZK_BUBBLE: case ZK_IMAGE: return n->cb != NULL;
-	default: return false;
+	case ZK_ITEM: return n->cb != NULL || n->hold_cb != NULL;
+	case ZK_BUBBLE: case ZK_IMAGE: return n->cb != NULL || n->hold_cb != NULL;
+	default: return zui_widget_interactive(n);
 	}
 }
 
 static zui_node *hit_in(zui_node *n, float x, float y) {
+	if (n->kind == ZK_HUB) x += zui_hub_offset(n);	/* its sections have slid */
 	for (zui_node *c = n->first; c; c = c->next) {
 		if (!c->visible || c->kind == ZK_FOOTER) continue;
 		if (n->kind == ZK_TABS && c != zui_tab_at(n, n->tab_cur)) continue;
@@ -1024,6 +1038,7 @@ static void focus(zui_app *app, zui_node *field) {
 
 static void slider_to(zui_app *app, zui_node *s, float x) {
 	float pad = in_card(s) ? app->style->m.card_pad : 0;
+	x += zui_node_hub_shift(s);
 	float x0 = s->x + pad, w = s->w - 2 * pad;
 	double v = w > 0 ? (x - x0) / w : 0;
 	v = v < 0 ? 0 : v > 1 ? 1 : v;
@@ -1038,7 +1053,7 @@ static void field_tapped(zui_app *app, zui_node *f, bool twice) {
 	size_t len = strlen(t);
 	f->sel_a = f->sel_b = 0;
 	if (!f->multiline || !len || len > 1500) { f->caret = (int)len; return; }
-	float tx = app->last_x - f->x - 10, ty = app->last_y - f->y - 9;
+	float tx = app->last_x + zui_node_hub_shift(f) - f->x - 10, ty = app->last_y - f->y - 9;
 	if (f->parent) {}
 	int best = (int)len;
 	float bd = 1e9f;
@@ -1062,6 +1077,7 @@ static void field_tapped(zui_app *app, zui_node *f, bool twice) {
 }
 
 static void activate(zui_app *app, zui_node *n) {
+	if (zui_widget_activate(app, n)) return;
 	switch (n->kind) {
 	case ZK_SWITCH:
 		zui_set_on(n, !n->on);
@@ -1092,7 +1108,23 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 		zui_do_layout(app, page);
 		app->laid_out = true;
 	}
+	if (app->ov) {
+		/* a menu, a dialog or a picker over the page takes every touch */
+		if (zui_widgets_touch(app, phase, x, y, time)) {
+			if (phase >= 2) {
+				app->touching = app->dragging = false;
+				app->hold_fired = false;
+				app->hold_node = NULL;
+				zui_hold_cancel(app);
+			}
+			return;
+		}
+	}
 	if (phase == 0) {
+		/* the suggestions under a field are over the page and get the touch first */
+		if (zui_suggest_touch(app, x, y, 0)) return;
+		zui_hold_start(app, NULL, time);
+		app->hub_drag = false;
 		if (app->trans_to) transition_finish(app);
 		app->touching = true;
 		app->dragging = false;
@@ -1124,6 +1156,7 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 			if (hit) {
 				app->pressed = hit;
 				zanim_go(&app->press, 1, 90, now);
+				zui_hold_start(app, hit, time);
 			}
 			app->dirty = true;
 			zui_unlock();
@@ -1139,10 +1172,12 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 			return;
 		}
 		if (hit) {
+			float sx = x + zui_node_hub_shift(hit);
 			app->pressed = hit;
-			app->press_fx = hit->w > 0 ? (x - hit->x) / hit->w * 2 - 1 : 0;
+			app->press_fx = hit->w > 0 ? (sx - hit->x) / hit->w * 2 - 1 : 0;
 			app->press_fy = hit->h > 0 ? (y + page->scroll - hit->y) / hit->h * 2 - 1 : 0;
 			zanim_go(&app->press, 1, 90, now);
+			zui_hold_start(app, hit, time);
 		}
 		app->dirty = true;
 		return;
@@ -1155,8 +1190,26 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 		}
 		float dy = y - app->down_y, dx = x - app->down_x;
 		if (app->in_footer) return;
+		if (page->hub && !app->dragging && !app->hub_drag && !app->swiping && fabsf(dx) > SLOP && fabsf(dx) > fabsf(dy) * 1.2f) {
+			/* the hub's sections follow the finger sideways */
+			app->hub_drag = true;
+			app->hub_from = zui_hub_offset(page->hub);
+			app->swipe_v = 0;
+			zui_hold_cancel(app);
+			if (app->pressed) zanim_go(&app->press, 0, 160, now);
+		}
+		if (app->hub_drag) {
+			float dt = (float)(int32_t)(time - app->last_t);
+			if (dt > 0) app->swipe_v = app->swipe_v * 0.3f + (-(x - app->last_x) / dt) * 0.7f;
+			app->last_t = time;
+			app->last_x = x;
+			app->last_y = y;
+			zui_hub_drag(app, page->hub, dx);
+			return;
+		}
 		if (!app->dragging && !app->swiping && page->tabs && fabsf(dx) > SLOP && fabsf(dx) > fabsf(dy) * 1.2f) {
 			app->swiping = true;
+			zui_hold_cancel(app);
 			if (app->pressed) zanim_go(&app->press, 0, 160, now);
 			app->laid_out = false;
 		}
@@ -1175,6 +1228,7 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 		}
 		if (!app->dragging && fabsf(dy) > SLOP) {
 			app->dragging = true;
+			zui_hold_cancel(app);
 			if (app->pressed) zanim_go(&app->press, 0, 160, now);
 		}
 		if (app->dragging) {
@@ -1197,6 +1251,14 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 	}
 	/* up or cancel */
 	app->touching = false;
+	zui_hold_cancel(app);
+	if (app->hub_drag) {
+		app->hub_drag = false;
+		zui_hub_release(app, page->hub, app->swipe_v);
+		app->swipe_v = 0;
+		app->hold_fired = false;
+		return;
+	}
 	if (app->swiping) {
 		app->swiping = false;
 		zui_node *T = page->tabs;
@@ -1230,6 +1292,11 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 		if (app->pressed) zanim_go(&app->press, 0, 160, now);
 		return;
 	}
+	/* a hold already did what it does; the lift is not a tap */
+	if (zui_hold_on_lift(app, time, app->hold_since)) {
+		app->dirty = true;
+		return;
+	}
 	/* a tap */
 	if (app->down_y < page->header_h && y < page->header_h) {
 		if (page->tabs) {
@@ -1245,6 +1312,7 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 		return;
 	}
 	zui_node *hit = app->pressed;
+	zui_pickers_close_except(app, hit);	/* a tap anywhere else shuts a list picker */
 	if (hit) {
 		zanim_go(&app->press, 0, 200, now);
 		/* the press shows for at least a moment even on a quick tap */
@@ -1254,6 +1322,25 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 		activate(app, hit);
 	} else if (app->focus) {
 		focus(app, NULL);
+	}
+	app->dirty = true;
+}
+
+ZUI_EXPORT void zui_page_scroll_to(zui_node *page, double y, bool glide) {
+	zui_app *app = page->app;
+	if (!app->laid_out) zui_do_layout(app, page);
+	float max = scroll_max(app, page);
+	float to = (float)y - page->header_h;
+	to = to < 0 ? 0 : to > max ? max : to;
+	page->stick_end = false;
+	page->vel = 0;
+	app->fling = false;
+	if (glide && app->wl) {
+		page->scroll_goal = to;
+		page->scroll_goal_on = true;
+	} else {
+		page->scroll = to;
+		page->scroll_goal_on = false;
 	}
 	app->dirty = true;
 }
@@ -1363,7 +1450,13 @@ void zui_step(zui_app *app, uint32_t now) {
 	last_step = now;
 	if (app->trans_to && (int32_t)(now - app->trans_start) >= app->style->transition_ms)
 		transition_finish(app);
+	zui_widgets_step(app, now);
 	if (!page) return;
+	if (page->scroll_goal_on && !app->touching) {
+		page->scroll += (page->scroll_goal - page->scroll) * (1 - expf(-dt / 90));
+		if (fabsf(page->scroll_goal - page->scroll) < 0.5f) { page->scroll = page->scroll_goal; page->scroll_goal_on = false; }
+		app->dirty = true;
+	}
 	if (page->tabs && !app->swiping) {
 		bool running = false;
 		zanim_value(&page->tabs->knob, now, &running);
@@ -1426,6 +1519,9 @@ bool zui_animating(zui_app *app) {
 	if (app->toast && (int32_t)(now - app->toast_at) < 2600) return true;
 	if (page && !app->touching && (page->scroll < 0 || page->scroll > scroll_max(app, page))) return true;
 	if (page && has_indeterminate(page)) return true;
+	if (page && page->scroll_goal_on) return true;
+	if (zui_widgets_animating(app, now)) return true;
+	if (page && zui_widgets_page_moving(app, page, now)) return true;
 	return false;
 }
 
@@ -1592,6 +1688,7 @@ static void draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint3
 		st->field(app, n, now);
 		break;
 	default:
+		zui_widget_draw(app, n, &xf, now);
 		break;
 	}
 	zg_set_alpha(alpha);
@@ -1720,6 +1817,7 @@ void zui_draw(zui_app *app, uint32_t now) {
 	} else {
 		draw_page(app, page, now, 0, 0, 0);
 	}
+	zui_widgets_draw_over(app, now);
 	if (app->busy) st->busy(app, now);
 	if (app->toast) {
 		float age = (float)(int32_t)(now - app->toast_at);

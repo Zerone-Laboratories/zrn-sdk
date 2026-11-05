@@ -53,6 +53,7 @@ enum zui_event {
 	ZUI_EVENT_CLICK,	/* a button or an item was tapped */
 	ZUI_EVENT_CHANGE,	/* a switch, slider or field changed (a slider: while dragged) */
 	ZUI_EVENT_SUBMIT,	/* a field's Enter, or a slider let go */
+	ZUI_EVENT_HOLD,		/* zui_set_hold: the finger stayed down (half a second) */
 };
 
 enum zui_variant {
@@ -60,6 +61,7 @@ enum zui_variant {
 	ZUI_TONAL,		/* a quieter button: the accent, faint */
 	ZUI_PLAIN,		/* text only */
 	ZUI_DANGER,		/* a button that deletes or resets */
+	ZUI_LINK,		/* a button as a hyperlink: the accent colour, no frame */
 };
 
 /* ---- the app ---- */
@@ -260,6 +262,96 @@ void zui_layout(zui_app *app, zui_node *page, int width, int height);
 void zui_inject_touch(zui_app *app, int phase, double x, double y);
 /* typing into the field that has the keyboard: UTF-8, "\b" backspace, "\n" Enter */
 void zui_inject_text(zui_app *app, const char *utf8);
+
+/* ---- more of what Windows Phone 8.1 had ---- */
+/* Each of these looks as ZrnMetroCore draws it in Metro, and the same in
+ * DotMatrix. None of them is meant to be put inside a zui_list row: rows are
+ * painted once, so what moves in one stays still until zui_list_refresh. */
+
+/* CheckBox and RadioButton. zui_get_on / zui_set_on; the handler gets
+ * ZUI_EVENT_CHANGE. The radios that share a parent are one group: turning one
+ * on turns the others off (and each of them is told). */
+zui_node *zui_check(zui_node *parent, const char *title, bool on, zui_cb on_change, void *data);
+zui_node *zui_radio(zui_node *parent, const char *title, bool on, zui_cb on_change, void *data);
+
+/* PasswordBox: a field that shows dots. zui_get_text still gives the text. */
+void zui_field_set_password(zui_node *field, bool password);
+/* AutoSuggestBox: while the field has the keyboard and something is typed,
+ * the items that contain it (any case) hang under it, four at most; a tap
+ * puts one in the field and gives ZUI_EVENT_SUBMIT. */
+void zui_field_set_suggestions(zui_node *field, const char *const *items, int count);
+
+/* ProgressRing: five dots going round, for something of no known length.
+ * zui_set_visible(ring, false) stops it. */
+zui_node *zui_ring(zui_node *parent);
+
+/* ListPicker / ComboBox, in place: a caption over a box with the chosen
+ * option; tapped, the box opens to show every option, the chosen one in the
+ * accent. The handler gets ZUI_EVENT_CHANGE. */
+zui_node *zui_picker(zui_node *parent, const char *caption, const char *const *options, int count,
+		int selected, zui_cb on_change, void *data);
+int zui_picker_selected(zui_node *picker);
+void zui_picker_select(zui_node *picker, int index);
+
+/* DatePicker and TimePicker: a row with the value in the accent; tapped, the
+ * whole screen goes to three looping columns (day month year; hour minute),
+ * and a tick and a cross under them. month 1..12, day 1..31, hour 0..23.
+ * The handler gets ZUI_EVENT_CHANGE when the tick is tapped. */
+zui_node *zui_date_picker(zui_node *parent, const char *title, int year, int month, int day,
+		zui_cb on_change, void *data);
+void zui_date_picker_get(zui_node *picker, int *year, int *month, int *day);
+void zui_date_picker_set(zui_node *picker, int year, int month, int day);
+zui_node *zui_time_picker(zui_node *parent, const char *title, int hour, int minute,
+		zui_cb on_change, void *data);
+void zui_time_picker_get(zui_node *picker, int *hour, int *minute);
+void zui_time_picker_set(zui_node *picker, int hour, int minute);
+
+/* Tiles: a grid of squares (two to a row, a wide one a row of its own) in the
+ * accent colour or the tile's tint, an icon in the middle and the title under
+ * it; they lean when pressed, as everything does. zui_set_badge puts a count
+ * in a corner. */
+zui_node *zui_tiles(zui_node *parent);
+zui_node *zui_tile(zui_node *tiles, const char *title, const char *icon, bool wide, zui_cb on_tap, void *data);
+/* A live tile (HubTile): every period_ms it turns over to show `back` and
+ * turns back again. period_ms 0 stops it. */
+void zui_tile_set_live(zui_node *tile, const char *back, int period_ms);
+
+/* Hub (Panorama): sections side by side, wider than the screen, the next one
+ * showing at the edge. A swipe slides to the next; the page's title moves more
+ * slowly than the sections and a picture behind them slower still. A page
+ * has either tabs or a hub, not both. A section is a column: put anything in it. */
+zui_node *zui_hub(zui_node *page);
+zui_node *zui_hub_section(zui_node *hub, const char *title);
+void zui_hub_set_background(zui_node *hub, zui_pixmap *pix);
+void zui_hub_show(zui_node *hub, int section);
+int zui_hub_current(zui_node *hub);
+
+/* Press and hold: the handler of zui_set_hold gets ZUI_EVENT_HOLD when the
+ * finger has stayed on the node for half a second without moving; the tap
+ * that would have followed is not given. */
+void zui_set_hold(zui_node *node, zui_cb on_hold, void *data, zui_free_fn free_data);
+/* Scroll a page so `y` (page points, as zui_node_frame gives them) is at the top of its content. */
+void zui_page_scroll_to(zui_node *page, double y, bool glide);
+
+/* ---- over the page ---- */
+/* One at a time, over the page, header and bar and all; Back closes it, and
+ * while it is open it takes every touch. index is what was chosen. */
+typedef void (*zui_choice_fn)(zui_app *app, int index, void *data);
+/* A menu (ContextMenu, MenuFlyout): a panel across the screen under `anchor`
+ * (or at the bottom if NULL) with the items in it; a tap outside closes it. */
+void zui_menu(zui_app *app, zui_node *anchor, const char *const *items, int count,
+		zui_choice_fn on_choose, void *data);
+/* A MessageDialog: a panel with a title, some words and up to three buttons
+ * in a row; on_choose gets the button's index. */
+void zui_dialog(zui_app *app, const char *title, const char *message, const char *const *buttons,
+		int count, zui_choice_fn on_choose, void *data);
+/* A jump list (SemanticZoom's zoomed-out view): a grid of tiles that turn in
+ * one after another, four to a row; live[i] false greys one out (NULL: all
+ * live). A tap on a live tile gives its index. */
+void zui_jump_list(zui_app *app, const char *const *labels, const bool *live, int count,
+		zui_choice_fn on_choose, void *data);
+bool zui_overlay_open(zui_app *app);
+void zui_overlay_close(zui_app *app);
 
 #ifdef __cplusplus
 }
