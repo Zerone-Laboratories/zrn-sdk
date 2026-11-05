@@ -186,6 +186,22 @@ static void foot(zui_app *app, zui_node *n) {
 }
 
 /* a row with a tile: Messaging's thread row */
+/* the app list's row, as ztmetro draws it: 45 pt square, title 22 pt 13 pt after it */
+static void applist_row(zui_app *app, zui_node *n) {
+	struct zui_palette pal = app->style->palette(app);
+	const float s = 45;
+	float x = n->x, y = n->y, left = x + s + 13, right = x + n->w;
+	zui_draw_leading(app, n, x, y, s, 0, 0xffffffff);
+	if (n->icon && !n->pix && !n->monogram) zui_icon(n->icon, x + (s - 26) / 2, y + (s - 26) / 2, 26, 2, 0xffffffff);
+	bool sub = n->subtitle && *n->subtitle;
+	struct zt_layout *T = zt_slot_get(&n->t[0], n->text, ZT_LIGHT, 22, right - left, 1);
+	zt_draw(T, left, sub ? y - 3 : y + (s - T->line_h) / 2, pal.text);
+	if (sub) {
+		struct zt_layout *S = zt_slot_get(&n->t[1], n->subtitle, ZT_REGULAR, 13, right - left, 1);
+		zt_draw(S, left, y + 24, pal.text2);
+	}
+}
+
 static void thread_row(zui_app *app, zui_node *n) {
 	struct zui_palette pal = app->style->palette(app);
 	float x = n->x, y = n->y, w = n->w, left = x + 56 + 12, right = x + w;
@@ -216,6 +232,21 @@ static void item(zui_app *app, zui_node *n, float press) {
 	(void)press;
 	struct zui_palette pal = app->style->palette(app);
 	float x = n->x, y = n->y, w = n->w, h = n->h, right = x + w;
+	if (n->group && n->monogram) {  /* the app list's letter: 45 pt outline, as ztmetro draws it */
+		const float s = 45, t = 1.5f;
+		uint32_t c = zc_rgb(app->accent);
+		zg_rect(x, y, s, t, 0, c);
+		zg_rect(x, y + s - t, s, t, 0, c);
+		zg_rect(x, y, t, s, 0, c);
+		zg_rect(x + s - t, y, t, s, 0, c);
+		struct zt_layout *G = zt_slot_get(&n->t[2], n->monogram, ZT_LIGHT, 27, 0, 0);
+		zt_draw(G, x + 4, y + 7 - (G->line_h - 27) / 2, c);
+		return;
+	}
+	if (n->applist && (n->pix || n->monogram || n->icon)) {
+		applist_row(app, n);
+		return;
+	}
 	if (n->pix || n->monogram) {
 		thread_row(app, n);
 		return;

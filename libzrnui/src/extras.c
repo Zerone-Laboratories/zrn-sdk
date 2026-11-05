@@ -162,6 +162,40 @@ ZUI_EXPORT void zui_set_monogram(zui_node *n, const char *t) {
 	n->app->laid_out = false;
 	n->app->dirty = true;
 }
+ZUI_EXPORT void zui_page_set_fullscreen(zui_node *n, bool on) {
+	n->fullscreen = on;
+	n->app->laid_out = false;
+	n->app->dirty = true;
+}
+ZUI_EXPORT void zui_set_image_fit(zui_node *n, bool fit) {
+	n->fit = fit;
+	n->app->laid_out = false;
+	n->app->dirty = true;
+}
+ZUI_EXPORT void zui_set_bar_dots(zui_node *n, bool dots) {
+	n->no_dots = !dots;
+	n->app->dirty = true;
+}
+ZUI_EXPORT void zui_set_quiet(zui_node *n, bool quiet) {
+	n->quiet = quiet;
+	n->app->laid_out = false;
+	n->app->dirty = true;
+}
+ZUI_EXPORT void zui_set_gap(zui_node *n, double gap) {
+	n->has_gap = true;
+	n->row_gap = (float)gap;
+	n->app->laid_out = false;
+	n->app->dirty = true;
+}
+ZUI_EXPORT void zui_set_applist_row(zui_node *n, bool on) {
+	n->applist = on;
+	n->app->laid_out = false;
+	n->app->dirty = true;
+}
+ZUI_EXPORT void zui_set_group_letter(zui_node *n, const char *t) {
+	n->group = t && *t;
+	zui_set_monogram(n, t);
+}
 ZUI_EXPORT void zui_set_emphasis(zui_node *n, bool on) { n->emphasis = on; n->app->dirty = true; }
 
 /* a picture filling (x,y,w,h), cropped to keep its shape */

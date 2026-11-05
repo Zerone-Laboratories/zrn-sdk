@@ -93,6 +93,8 @@ zui_node *zui_page(zui_app *app, const char *title);
 void zui_push(zui_node *page);
 /* Up a page; on the first page this closes the app. */
 void zui_back(zui_app *app);
+/* The page in front becomes the first one: back closes the app (a splash that was replaced). */
+void zui_page_set_root(zui_node *page);
 zui_node *zui_current_page(zui_app *app);
 
 /* ---- layout: things go in the order they are added ---- */
@@ -142,6 +144,23 @@ void zui_set_monogram(zui_node *node, const char *text);
 void zui_set_badge(zui_node *node, const char *text);
 /* an item's title stands out (unread) */
 void zui_set_emphasis(zui_node *node, bool on);
+/* An item as the letter that opens a group in the app list: an outline of the accent
+ * with the letter, lower case, in its corner (an alphabetical list's divider). */
+void zui_set_group_letter(zui_node *node, const char *letter);
+/* An item with a picture or monogram drawn as a row of the app list: a 45 pt square,
+ * the title 22 pt beside it, 55 pt from one row to the next. */
+void zui_set_applist_row(zui_node *node, bool on);
+/* the space between the things in a row or column, in points (default: the style's) */
+void zui_set_gap(zui_node *row, double gap);
+/* Text in the system's quiet colour (the grey of the titles that are not in front) and a
+ * light weight, whatever its size: a timeline's day headings. */
+void zui_set_quiet(zui_node *text, bool quiet);
+/* A page without its title and tab titles, its content over the whole window (above the
+ * footer): a photo viewer. The page does not scroll. */
+void zui_page_set_fullscreen(zui_node *page, bool on);
+/* An image that fills the room there is, whole and centred (the larger side touches the
+ * edges): on a fullscreen page the window above the footer. */
+void zui_set_image_fit(zui_node *image, bool fit);
 /* text: 0 start, 1 end, 2 centre */
 void zui_set_align(zui_node *node, int align);
 
@@ -177,6 +196,8 @@ zui_node *zui_footer(zui_node *page);
 void zui_field_set_multiline(zui_node *field, bool multiline);
 /* a row across the whole screen on the bar colour: an application bar */
 void zui_set_bar(zui_node *row, bool bar);
+/* an application bar without WP's three dots (and so without the words under its buttons) */
+void zui_set_bar_dots(zui_node *row, bool dots);
 /* A speech bubble in a list: as wide as what is in it, on the end if `mine`. */
 zui_node *zui_bubble(zui_node *parent, bool mine);
 /* A page's title as given and smaller, with a line under it (a person's name) */

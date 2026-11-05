@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 /* A small set of line icons, drawn as strokes on a 24-unit grid. */
+#include <math.h>
 #include <string.h>
 #include "zui-internal.h"
 
@@ -107,6 +108,76 @@ void zui_icon(const char *name, float x, float y, float size, float stroke, uint
 		zg_border(x + 2.5f * p.k, y + 7 * p.k, 17 * p.k, 10 * p.k, 2.4f * p.k, stroke, c);
 		zg_rect(x + 20.5f * p.k, y + 10 * p.k, 1.8f * p.k, 4 * p.k, 0.8f * p.k, c);
 		zg_rect(x + 5 * p.k, y + 9.5f * p.k, 8 * p.k, 5 * p.k, 1 * p.k, c);
+	} else if (!strcmp(name, "heart") || !strcmp(name, "heart-fill")) {
+		/* the classic heart curve; "heart-fill" is the same with smaller ones inside */
+		int fill = name[5] ? 3 : 1;
+		for (int f = 0; f < fill; f++) {
+			float s = 0.46f * (1.0f - 0.3f * f), px = 0, py = 0;
+			for (int a = 0; a <= 360; a += 15) {
+				float t = (float)a * 3.14159265f / 180.0f, sn = sinf(t);
+				float x = 12 + s * 16 * sn * sn * sn;
+				float y = 11.5f - s * (13 * cosf(t) - 5 * cosf(2 * t) - 2 * cosf(3 * t) - cosf(4 * t)) + 0.6f * f;
+				if (a) L(P, px, py, x, y);
+				px = x;
+				py = y;
+			}
+		}
+	} else if (!strcmp(name, "image")) {
+		zg_border(x + 3 * p.k, y + 4.5f * p.k, 18 * p.k, 15 * p.k, 0, stroke, c);
+		const float hill[] = { 3.5f, 17, 9, 11, 13, 15, 16, 12, 20.5f, 17 };
+		poly(P, hill, 5);
+		dot(P, 16.5f, 8.5f, 1.5f);
+	} else if (!strcmp(name, "cloud")) {
+		A(P, 8, 15, 4, 90, 270);
+		A(P, 12, 11, 5, 180, 360);
+		A(P, 17, 14, 4, 270, 450);
+		L(P, 8, 19, 17, 19);
+		L(P, 12, 17, 12, 12);
+		L(P, 9.5f, 14, 12, 11.5f);
+		L(P, 14.5f, 14, 12, 11.5f);
+	} else if (!strcmp(name, "broom")) {
+		L(P, 17, 3.5f, 11, 11);
+		const float head[] = { 9.5f, 10, 15, 13.5f, 13, 20.5f, 5, 20.5f, 5.5f, 14, 9.5f, 10 };
+		poly(P, head, 6);
+		L(P, 8.5f, 15, 8, 20);
+		L(P, 11.5f, 15.5f, 11, 20);
+	} else if (!strcmp(name, "globe")) {
+		ring(P, 12, 12, 9);
+		L(P, 3, 12, 21, 12);
+		A(P, 12, 12, 9, 90, 270);
+		A(P, 12, 12, 4.5f, 90, 270);
+		A(P, 12, 12, 4.5f, -90, 90);
+	} else if (!strcmp(name, "grid")) {
+		zg_border(x + 4 * p.k, y + 4 * p.k, 7 * p.k, 7 * p.k, 0, stroke, c);
+		zg_border(x + 13 * p.k, y + 4 * p.k, 7 * p.k, 7 * p.k, 0, stroke, c);
+		zg_border(x + 4 * p.k, y + 13 * p.k, 7 * p.k, 7 * p.k, 0, stroke, c);
+		zg_border(x + 13 * p.k, y + 13 * p.k, 7 * p.k, 7 * p.k, 0, stroke, c);
+	} else if (!strcmp(name, "sync")) {
+		A(P, 12, 12, 7.5f, 200, 340);
+		A(P, 12, 12, 7.5f, 20, 160);
+		const float a1[] = { 17.5f, 5.5f, 19.5f, 9, 15.5f, 9.5f };
+		const float a2[] = { 6.5f, 18.5f, 4.5f, 15, 8.5f, 14.5f };
+		poly(P, a1, 3);
+		poly(P, a2, 3);
+	} else if (!strcmp(name, "sparkle")) {
+		L(P, 12, 3, 12, 21);
+		L(P, 3, 12, 21, 12);
+		L(P, 6, 6, 18, 18);
+		L(P, 18, 6, 6, 18);
+	} else if (!strcmp(name, "trash")) {
+		L(P, 4.5f, 7, 19.5f, 7);
+		const float lid[] = { 9, 7, 9, 4, 15, 4, 15, 7 };
+		poly(P, lid, 4);
+		const float body[] = { 6.5f, 7, 7.5f, 20, 16.5f, 20, 17.5f, 7 };
+		poly(P, body, 4);
+		L(P, 10.5f, 10.5f, 10.5f, 16.5f);
+		L(P, 13.5f, 10.5f, 13.5f, 16.5f);
+	} else if (!strcmp(name, "share")) {
+		const float box[] = { 7, 10, 5.5f, 10, 5.5f, 20, 18.5f, 20, 18.5f, 10, 17, 10 };
+		poly(P, box, 6);
+		L(P, 12, 15, 12, 3.5f);
+		const float head[] = { 8, 7.5f, 12, 3.5f, 16, 7.5f };
+		poly(P, head, 3);
 	} else if (!strcmp(name, "info")) {
 		ring(P, 12, 12, 8.6f);
 		L(P, 12, 11, 12, 16.5f);

@@ -172,12 +172,13 @@ struct zui_node {
 	int tab_cur, tab_prev;
 	/* pictures, lists, the rest */
 	zui_pixmap *pix;
-	bool sharp, emphasis, mine, compact, inline_hint;
+	bool group, applist, has_gap, fullscreen, fit, no_dots, quiet, sharp, emphasis, mine, compact, inline_hint;
 	float radius;
 	int align;
 	bool multiline, bar;
 	struct zanim arrive;	/* a new row rising in */
 	char *badge, *monogram;
+	float row_gap;
 	struct zui_list_state *list;
 	/* a row of a list: painted once, then only moved */
 	unsigned row_tex;
@@ -197,6 +198,7 @@ struct zui_node {
 struct zui_timer_entry { int id; uint64_t due, every; zui_fn fn; void *data; };
 
 struct zui_app {
+	float fit_h;	/* a fullscreen page: the height an image set to fit has */
 	char *app_id, *title;
 	const struct zui_style *style;
 	uint32_t dot_main;

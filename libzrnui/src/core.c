@@ -601,6 +601,11 @@ ZUI_EXPORT void zui_push(zui_node *page) {
 	app->dirty = true;
 }
 
+ZUI_EXPORT void zui_page_set_root(zui_node *page) {
+	page->back_to = NULL;
+	page->depth = 0;
+}
+
 ZUI_EXPORT void zui_back(zui_app *app) {
 	transition_finish(app);
 	zui_node *page = app->page;
@@ -673,8 +678,13 @@ static float node_text_size(const zui_node *n) {
 	return text_size(n->app, n->kind);
 }
 
+static int node_font(const zui_node *n);
 static int text_font(int kind) {
 	return kind == ZK_HEADING ? ZT_STRONG : ZT_REGULAR;
+}
+
+static int node_font(const zui_node *n) {
+	return n->quiet ? ZT_LIGHT : text_font(n->kind);
 }
 
 static float intrinsic_w(zui_node *n) {
@@ -760,7 +770,7 @@ static float bubble_width(zui_node *n, float most) {
 				s += k + (e ? 1 : 0);
 			}
 		} else if (c->text) {
-			cw = zt_width(c->text, text_font(c->kind), node_text_size(c));
+			cw = zt_width(c->text, node_font(c), node_text_size(c));
 		}
 		if (cw > w) w = cw;
 	}
@@ -777,7 +787,7 @@ static float layout_node(zui_node *n, float x, float y, float w) {
 	n->w = w;
 	switch (n->kind) {
 	case ZK_COLUMN:
-		h = layout_children_column(n, x + pad, y, w - 2 * pad, m->gap);
+		h = layout_children_column(n, x + pad, y, w - 2 * pad, n->has_gap ? n->row_gap : m->gap);
 		break;
 	case ZK_CARD:
 		h = layout_card(n, x, y, w, m->gap * 0.75f);
@@ -797,7 +807,7 @@ static float layout_node(zui_node *n, float x, float y, float w) {
 		}
 		break;
 	case ZK_ROW: {
-		float gap = m->gap * 0.75f, fixed = 0, flex = 0;
+		float gap = n->has_gap ? n->row_gap : m->gap * 0.75f, fixed = 0, flex = 0;
 		int count = 0;
 		for (zui_node *c = n->first; c; c = c->next) {
 			if (!c->visible) continue;
@@ -825,6 +835,11 @@ static float layout_node(zui_node *n, float x, float y, float w) {
 		break;
 	}
 	case ZK_IMAGE: {
+		if (n->fit) {
+			n->w = w;
+			h = app->fit_h > 0 ? app->fit_h : app->height;
+			break;
+		}
 		float iw = n->space > 0 ? (float)n->space : w - 2 * pad;
 		h = n->value > 0 ? (float)n->value :
 			n->pix ? iw * n->pix->h / n->pix->w : iw;
@@ -872,7 +887,7 @@ static float layout_node(zui_node *n, float x, float y, float w) {
 		h = (float)n->space;
 		break;
 	case ZK_TEXT: case ZK_HEADING: case ZK_CAPTION: {
-		struct zt_layout *L = zt_slot_get(&n->t[0], n->text, text_font(n->kind),
+		struct zt_layout *L = zt_slot_get(&n->t[0], n->text, node_font(n),
 			node_text_size(n), w - 2 * pad, 0);
 		h = L->h + (pad > 0 ? 0 : 0);
 		break;
@@ -882,7 +897,7 @@ static float layout_node(zui_node *n, float x, float y, float w) {
 		break;
 	case ZK_ITEM:
 		h = (n->subtitle && *n->subtitle) || n->detail ? m->item_h2 : m->item_h;
-		if (n->pix || n->monogram) h = 76;
+		if (n->pix || n->monogram || n->applist) h = n->group || n->applist ? 55 : 76;
 		break;
 	case ZK_SWITCH:
 		h = (n->subtitle && *n->subtitle) || true ? m->item_h2 : m->item_h;
@@ -920,6 +935,24 @@ void zui_do_layout(zui_app *app, zui_node *page) {
 	page->x = 0;
 	page->y = 0;
 	page->w = app->width;
+	if (page->fullscreen) {
+		page->header_h = 0;
+		float foot = 0;
+		if (page->footer && page->footer->visible) {
+			foot = layout_node(page->footer, m->margin, 0, app->width - 2 * m->margin) + 16;
+			page->footer->visible = false;
+		}
+		app->fit_h = app->height - (foot > 0 ? foot + 8 : 0);
+		layout_children_column(page, 0, 0, app->width, 0);
+		if (foot > 0) {
+			page->footer->visible = true;
+			layout_node(page->footer, m->margin, app->height - foot + 8, app->width - 2 * m->margin);
+		}
+		page->content_h = app->height;
+		page->h = page->content_h;
+		zui_unlock();
+		return;
+	}
 	page->header_h = page->compact ? 62 : m->bar_h + (page->tabs ? app->style->tabs_h : 0);
 	float y = page->header_h;
 	y = page->tabs ? y + 10 : page->footer ? y + 8 : app->style->page_top(app, page, y, false);
@@ -1081,7 +1114,7 @@ void zui_touch(zui_app *app, int phase, float x, float y, uint32_t time) {
 			hit = hit_in(page->footer, x, y);
 			app->in_footer = true;
 			for (zui_node *b = page->footer->first; b; b = b->next)
-				if (b->bar && app->style->m.bar_button > 0 && x > app->width - 44 && y >= b->y - 4) {
+				if (b->bar && !b->no_dots && app->style->m.bar_button > 0 && x > app->width - 44 && y >= b->y - 4) {
 					app->bar_words = !app->bar_words;
 					app->laid_out = false;
 					app->dirty = true;
@@ -1474,7 +1507,7 @@ static void draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint3
 	switch (n->kind) {
 	case ZK_COLUMN: case ZK_ROW:
 		if (n->bar) zg_rect(0, n->y - 4, app->width, app->height - n->y + 4, 0, pal.surface2);
-		if (n->bar && app->style->m.bar_button > 0)	/* WP's three dots: open it for the words */
+		if (n->bar && !n->no_dots && app->style->m.bar_button > 0)	/* WP's three dots: open it for the words */
 			for (int d = 0; d < 3; d++) zg_circle(app->width - 26 + d * 7, n->y + 6, 1.5f, pal.text);
 		draw_children(app, n, &xf, now);
 		break;
@@ -1516,6 +1549,13 @@ static void draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint3
 		draw_children(app, n, &xf, now);
 		break;
 	case ZK_IMAGE:
+		if (n->fit) {  /* whole, centred, the larger side touching the edges */
+			if (n->pix) {
+				float k = fminf(n->w / n->pix->w, n->h / n->pix->h), w = n->pix->w * k, h = n->pix->h * k;
+				zui_draw_pixmap(app, n->pix, n->x + (n->w - w) / 2, n->y + (n->h - h) / 2, w, h, 0, n->sharp, 0);
+			}
+			break;
+		}
 		zui_draw_pixmap(app, n->pix, n->x, n->y, n->w, n->h, n->radius, n->sharp, pal.surface2);
 		break;
 	case ZK_CARD:
@@ -1526,12 +1566,12 @@ static void draw_node(zui_app *app, zui_node *n, const struct zg_xf *base, uint3
 		st->section_label(app, n);
 		break;
 	case ZK_TEXT: case ZK_HEADING: case ZK_CAPTION: {
-		struct zt_layout *L = zt_slot_get(&n->t[0], n->text, text_font(n->kind),
+		struct zt_layout *L = zt_slot_get(&n->t[0], n->text, node_font(n),
 			node_text_size(n), n->w - 2 * pad, 0);
 		float tx = n->x + pad;
 		if (n->align == 1) tx = n->x + n->w - pad - L->w;
 		else if (n->align == 2) tx = n->x + (n->w - L->w) / 2;
-		uint32_t ink = n->kind == ZK_CAPTION ? pal.text2 : pal.text;
+		uint32_t ink = n->kind == ZK_CAPTION || n->quiet ? pal.text2 : pal.text;
 		if (n->parent && n->parent->kind == ZK_BUBBLE && n->kind == ZK_CAPTION) ink = pal.bubble_caption;
 		zt_draw(L, tx, n->y, ink);
 		break;
@@ -1632,8 +1672,8 @@ static void draw_page(zui_app *app, zui_node *page, uint32_t now, int role, floa
 	zg_set_alpha(alpha);
 	if (page->footer && page->footer->visible) draw_node(app, page->footer, &base, now);
 	zg_set_xf(&base);
-	st->header(app, page, now);
-	if (page->tabs) {
+	if (!page->fullscreen) st->header(app, page, now);
+	if (page->tabs && !page->fullscreen) {
 		float off = zanim_value(&page->tabs->knob, now, NULL);
 		st->tabs(app, page->tabs, (float)page->tabs->tab_cur + off);
 	}
