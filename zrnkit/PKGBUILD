@@ -1,0 +1,15 @@
+pkgname=zrnkit
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="zrnkit - everything to create a ztOS app: zrnui (UI core) and zrnapp (Wayland window)"
+arch=('any')
+url="https://github.com/Zerone-Laboratories/zrn-sdk"
+license=('MIT')
+# a metapackage: it ships no files, it only pulls the libraries in. Build and install zrnui first, zrnapp depends on it.
+depends=("zrnui>=${pkgver}" "zrnapp>=${pkgver}")
+source=()
+
+package() {
+    # nothing to install
+    :
+}
