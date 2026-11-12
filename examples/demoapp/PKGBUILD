@@ -1,0 +1,18 @@
+pkgname=zrn-demoapp
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="zrnui demo application"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Zerone-Laboratories/zrn-sdk"
+license=('MIT')
+depends=('wayland' 'libxkbcommon' 'mesa' 'freetype2' 'libpng')
+makedepends=('cmake' 'pkgconf')
+source=()
+build() {
+    cmake -S "$srcdir/.." -B build -DCMAKE_BUILD_TYPE=Release \
+        -DZRNUI_BUILD_SHARED=OFF -DZRNAPP_BUILD_SHARED=OFF -DZRNUI_BUILD_TESTS=OFF -DZRNAPP_BUILD_TESTS=OFF
+    cmake --build build
+}
+package() {
+    install -Dm755 build/demoapp "$pkgdir/usr/bin/demoapp"
+}

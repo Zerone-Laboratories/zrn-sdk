@@ -1,8 +1,18 @@
 build/
 dist/
-target/
-__pycache__/
-*.pyc
-Cargo.lock
 # never commit keys
 *.key
+cmake-build-*/
+# proprietary Segoe files that a developer drops next to the bundled Selawik ones (the font directory)
+/zrnui/fonts/**/Segoe*
+/zrnui/fonts/**/segoe*
+/zrnui/fonts/**/seguisb.ttf
+/zrnui/pkg/
+*.pkg*
+*.src.tar.gz
+/zrnui/tests/CMakeFiles/
+/zrnui/tests/Makefile
+/zrnui/tests/cmake_install.cmake
+/zrnui/tests/CTestTestfile.cmake
+# notes and plans of AI agents, never committed
+agents/
