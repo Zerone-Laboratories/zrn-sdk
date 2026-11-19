@@ -16,3 +16,8 @@ cmake-build-*/
 /zrnui/tests/CTestTestfile.cmake
 # notes and plans of AI agents, never committed
 agents/
+# editor and agent files
+.idea/
+.claude/
+CLAUDE.md
+AGENTS.md

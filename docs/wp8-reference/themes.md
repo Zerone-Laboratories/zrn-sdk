@@ -1,6 +1,6 @@
 # WP8 theme constants
 
-Extracted from `theme-xaml/wp8_WPDT_DESIGN_{DARK,LIGHT}_THEMERESOURCES_XAML.xaml` (the full files, including style setters, are there). Colors are `#AARRGGBB`.
+Values from the Windows Phone 8 SDK's Dark and Light `ThemeResources.xaml` (the files themselves are in the SDK, not in this repository). Colors are `#AARRGGBB`.
 
 ## Accent colors
 

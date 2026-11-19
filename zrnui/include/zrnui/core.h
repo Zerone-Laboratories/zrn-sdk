@@ -5,8 +5,8 @@
  * core.h : base types, enums, lifecycle, errors.
  *
  * zrnui follows System.Windows.Controls of the Windows Phone 8 SDK
- * (docs/wp8-reference/10-silverlight-controls.md): the same class
- * hierarchy, the same properties and events, the same Measure / Arrange
+ * (see docs/wp8-reference/README.md for where to find its reference): the
+ * same class hierarchy, the same properties and events, the same Measure / Arrange
  * layout, drawn the way the WP8 templates draw them (Metro, Dark or Light,
  * with an accent color).
  *
