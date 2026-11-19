@@ -1,0 +1,719 @@
+/**
+ * zrnui - Hub and HubSection, after the Windows Phone 8.1 templates (generic.xaml of the phone SDK).
+ *
+ * A Hub is a big header (78 px Light, character spacing -22, margin 15,1) over sections that stand side by
+ * side in a horizontal ScrollViewer (no scroll bars, no snap points: a finger flings them freely). A section
+ * is a header (19 px SemiBold, spacing -10, margin -1,5,0,31.5) over its content, with the margin 19,0,0,0;
+ * each section keeps a placeholder as high as the header of the hub over its own header, so that the hub
+ * header is above the first one and the sections under it begin together.
+ *
+ * The sections go round (IsLooping, on by default, horizontal hub with two sections or more): past the last comes
+ * the first, and before the first the last. This is the library's, the phone hub does not. The ScrollViewer keeps
+ * its usual limits; the hub moves the section that left the view on one side to the other end of the StackPanel,
+ * and takes its width off the offset (or puts it on), which shows the same picture; inertia and a drag go on. A
+ * ring so short that a section would have to show at both edges gets room (the extent) and shows it as a gap,
+ * not as a copy. `rot` is how many sections went from the front to the back, for the order that the API tells.
+ *
+ * Orientation Vertical stacks the sections under one another in a vertical scroller; only the first one has
+ * the placeholder, and the header scrolls away with it.
+ *
+ * The width of a section, as the Hub of Windows Phone 8.1 has it: 90% of the width of the hub by default (the
+ * margin is outside of it), a multiple of that for a wide section (WidthMultiple), the width of its content with
+ * the multiple 0 (Width="Auto"), or its own Width in pixels. What the templates do not say: the header of the hub
+ * moves at half the speed of the sections (parallax); there is no chevron on an interactive header. The parallax
+ * of the background is not made.
+ */
+
+#include "zrnui/internal/util.h"
+#include "zrnui/internal/input.h"
+#include "zrnui/internal/class.h"
+#include "zrnui/internal/element.h"
+#include "zrnui/internal/resources.h"
+#include "zrnui/internal/text.h"
+#include "zrnui/internal/render/painter.h"
+#include "zrnui/internal/root.h"
+#include "zrnui/internal/controls/control.h"
+#include "zrnui/internal/controls/scroll.h"
+
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* classes of this file used before their definition */
+extern zrn_class_t zrn_class_hub;
+
+/* themeresources.xaml: HubHeaderFontSize 78, HubHeaderCharacterSpacing -22, HubHeaderMarginThickness 15,1,0,0, HubSectionHeaderFontSize 19,
+ * HubSectionHeaderCharacterSpacing -10, HubSectionHeaderMarginThickness -1,5,0,31.5, HubSectionMarginThickness 19,0,0,0 */
+static constexpr float HUB_HEADER_X = 15.0f;
+static constexpr float HUB_HEADER_Y = 1.0f;
+static constexpr float SECTION_FONT = 19.0f;
+static constexpr int SECTION_SPACING = -10;
+static constexpr float SECTION_HEADER_X = -1.0f;
+static constexpr float SECTION_HEADER_TOP = 5.0f;
+static constexpr float SECTION_HEADER_BOTTOM = 31.5f;
+static constexpr float SECTION_MARGIN_LEFT = 19.0f;
+/** The share of the width of the hub a standard section takes (the WP 8.1 hub: 90% of the window). */
+static constexpr float SECTION_WIDTH_SHARE = 0.9f;
+/** This library's: how fast the header of the hub moves against the sections. */
+static constexpr float HEADER_PARALLAX = 0.5f;
+
+typedef struct zrn_hub {
+	zrn_control_t base;
+	char* header;
+	ZOrientation orientation;
+	zrn_element_t* scroll;
+	/** The StackPanel in the scroller: the sections are its children. */
+	zrn_element_t* host;
+	/** The width the hub was measured for: what a section is capped by before the first arrange. */
+	float view_width;
+	/** The sections in view as of the last scroll: the first, and how many. */
+	int view_first, view_count;
+	ZHubSectionHeaderClickCallback header_click;
+	void* header_click_data;
+	/** IsLooping. */
+	bool b_looping;
+	/** How many sections went from the front of the StackPanel to the back; the first of the API is at index -rot mod n. */
+	int rot;
+	/** The widths that went off the offset to the back (and the ones that came on from it, minus): offset + unwound is the place on the ring. */
+	double unwound;
+	/** The sections in view are to be told again after the next arrange: a rotation moved them while the rects were old. */
+	bool b_view_dirty;
+	/** SectionsInViewChanged is to be raised: by the next tick, never from inside the layout pass, where a handler that destroys the tree would pull it from under the loop. */
+	bool b_view_event_pending;
+	/** The number of sections the ring state (rot, unwound, the ranks) was made for: another count means a section was destroyed behind the hub's back. */
+	int known_n;
+} zrn_hub_t;
+
+typedef struct zrn_hub_section {
+	zrn_content_control_t base;
+	char* header;
+	bool b_interactive;
+	bool b_pressed;
+	/** WidthMultiple: the width is this times the standard one; 0 is the width of the content. */
+	float width_multiple;
+	/** The place in the order of the API as of the last change through the hub: what puts the sections back in order after one was destroyed. */
+	int rank;
+} zrn_hub_section_t;
+
+#define HUB(e) ZRN_AS(zrn_hub_t, e)
+#define SECTION(e) ZRN_AS(zrn_hub_section_t, e)
+
+/** HubHeaderFontSize and HubHeaderCharacterSpacing of the theme resources of the root (an override applies). */
+static zrn_font_t hub_header_font(const zrn_hub_t* const h) {
+	const zrn_root_t* r = ((const zrn_element_t*)h)->root;
+	zrn_font_t f = { .family = Z_FONT_LIGHT, .size = 78.0f, .spacing = -22 };
+	zrn_res_double(r, Z_RES_HUB_HEADER_FONT_SIZE, &f.size);
+	zrn_res_int(r, Z_RES_HUB_HEADER_CHARACTER_SPACING, &f.spacing);
+	return f;
+}
+
+static zrn_font_t section_font(void) {
+	const zrn_font_t f = { .family = Z_FONT_SEMIBOLD, .size = SECTION_FONT, .spacing = SECTION_SPACING };
+	return f;
+}
+
+/** The row of the hub header: the header's line (none without a header) and its margin of 1. */
+static float hub_header_height(const zrn_hub_t* const h) {
+	return (h->header && *h->header ? zrn_font_line_height(hub_header_font(h)) : 0) + HUB_HEADER_Y;
+}
+
+static zrn_hub_t* hub_of(const zrn_element_t* e) {
+	for (e = e->parent; e; e = e->parent) if (e->cls == &zrn_class_hub) return HUB(e);
+	return nullptr;
+}
+
+static zrn_scroll_viewer_t* scroll_of(const zrn_hub_t* h) { return h->scroll ? ZRN_AS(zrn_scroll_viewer_t, h->scroll) : nullptr; }
+
+static int section_count(const zrn_hub_t* h) { return h->host ? h->host->child_count : 0; }
+
+static bool is_vertical(const zrn_hub_t* h) { return h->orientation == Z_VERTICAL; }
+
+/** The index of the section of the API in the StackPanel. */
+static int physical_index(const zrn_hub_t* const h, const int logical) {
+	const int n = section_count(h);
+	return n > 0 ? (((logical - h->rot) % n) + n) % n : 0;
+}
+
+
+/* ============================================================================
+ *  HubSection
+ * ============================================================================ */
+
+/** What the section keeps above its header for the header of the hub. */
+static float section_placeholder(const zrn_element_t* const e) {
+	zrn_hub_t* const h = hub_of(e);
+	if (!h) return 0;
+	if (is_vertical(h) && zrn_child_index(e->parent, e) != 0) return 0;
+	return hub_header_height(h);
+}
+
+static float section_header_band(void) { return SECTION_HEADER_TOP + zrn_font_line_height(section_font()) + SECTION_HEADER_BOTTOM; }
+
+static float section_top(const zrn_element_t* e) { return section_placeholder(e) + section_header_band(); }
+
+static ZSize section_measure(zrn_element_t* const e, const ZSize available) {
+	const auto cc = ZRN_AS(zrn_content_control_t, e);
+	const auto s = SECTION(e);
+	zrn_hub_t* const h = hub_of(e);
+	float top = section_top(e), w = available.width, text_w;
+	ZSize content = { .width = 0, .height = 0 };
+	const char* t = s->header ? s->header : "";
+	const bool b_fixed = e->width == Z_AUTO && s->width_multiple > 0 && h && !is_vertical(h) && h->view_width > 0;
+	if (b_fixed) w = s->width_multiple * SECTION_WIDTH_SHARE * h->view_width;
+	/* by content: never wider than the screen unless Width says so */
+	else if (h && !is_vertical(h) && h->view_width > 0) w = zrn_minf(w, zrn_maxf(0, h->view_width - SECTION_MARGIN_LEFT));
+	if (cc->content) {
+		zrn_measure(cc->content, zrn_size(w, zrn_maxf(0, available.height - top)));
+		content = cc->content->desired;
+	}
+	text_w = zrn_text_width(section_font(), t, (int)strlen(t)) + SECTION_HEADER_X;
+	return zrn_size(b_fixed ? w : zrn_maxf(content.width, text_w), top + content.height);
+}
+
+static ZSize section_arrange(zrn_element_t* const e, const ZSize final) {
+	const zrn_content_control_t* const cc = ZRN_AS(zrn_content_control_t, e);
+	const float top = section_top(e);
+	if (cc->content) zrn_arrange(cc->content, zrn_rect(0, top, final.width, zrn_maxf(0, final.height - top)));
+	return final;
+}
+
+static ZRect section_header_rect(zrn_element_t* const e) {
+	const zrn_hub_section_t* const s = SECTION(e);
+	const char* t = s->header ? s->header : "";
+	return zrn_rect(SECTION_HEADER_X, section_placeholder(e) + SECTION_HEADER_TOP, zrn_text_width(section_font(), t, (int)strlen(t)), zrn_font_line_height(section_font()));
+}
+
+static void section_paint(zrn_element_t* const e, zrn_painter_t* const p) {
+	const zrn_hub_section_t* const s = SECTION(e);
+	if (!s->header || !*s->header) return;
+	ZRect r = section_header_rect(e);
+	zrn_draw_string(p, section_font(), s->header, (int)strlen(s->header), r.x, r.y, zrn_ctl_foreground(&s->base.base));
+}
+
+static bool point_in(const ZRect r, const float x, const float y) { return x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height; }
+
+/* A tap on an interactive header is SectionHeaderClick; the rest of the section does not take the pointer, the scroller does. */
+static int section_input(zrn_element_t* const e, zrn_input_t* const in) {
+	const auto s = SECTION(e);
+	switch (in->type) {
+	case ZRN_IN_POINTER_DOWN:
+		if (!s->b_interactive || !point_in(section_header_rect(e), in->x, in->y)) return 0;
+		s->b_pressed = true;
+		if (e->root) zrn_set_capture(e->root, e);
+		return 1;
+	case ZRN_IN_POINTER_UP: {
+		const Zid id = e->id;
+		if (!s->b_pressed) return 0;
+		s->b_pressed = false;
+		if (e->root) zrn_release_capture(e->root, e);
+		bool b_inside = point_in(section_header_rect(e), in->x, in->y);
+		zrn_hub_t* h = hub_of(e);
+		if (b_inside && h && h->header_click) {
+			const Zid hub_id = h->base.base.id;
+			const ZHubSectionHeaderClickCallback cb = h->header_click;
+			void* const data = h->header_click_data;
+			cb(hub_id, id, data);
+		}
+		return 1;
+	}
+	case ZRN_IN_CAPTURE_LOST:
+		s->b_pressed = false;
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+static void section_init(zrn_element_t* const e) {
+	const auto c = ZRN_AS(zrn_control_t, e);
+	/* HubSection: Margin 19,0,0,0 (HubSectionMarginThickness); its content stretches */
+	e->margin = Zthickness(SECTION_MARGIN_LEFT, 0, 0, 0);
+	c->h_content = Z_HALIGN_STRETCH;
+	c->v_content = Z_VALIGN_STRETCH;
+	e->b_focusable = false;
+	SECTION(e)->width_multiple = 1.0f;
+}
+
+static void section_destroy(zrn_element_t* const e) {
+	free(SECTION(e)->header);
+	SECTION(e)->header = nullptr;
+}
+
+zrn_class_t zrn_class_hub_section = {
+	.base = &zrn_class_content_control, .name = "HubSection", .id = Z_CLASS_HUB_SECTION, .size = sizeof(zrn_hub_section_t),
+	.init = section_init, .destroy = section_destroy, .measure = section_measure, .arrange = section_arrange,
+	.paint = section_paint, .input = section_input
+};
+
+
+/* ============================================================================
+ *  Hub
+ * ============================================================================ */
+
+/** The first section in view and how many are: those that show at least half a pixel. */
+static void view_range(const zrn_hub_t* const h, int* const first, int* const count) {
+	zrn_scroll_viewer_t* const s = scroll_of(h);
+	int i, n = section_count(h);
+	double offset, size;
+	*first = 0;
+	*count = 0;
+	if (!s || !h->host) return;
+	offset = is_vertical(h) ? s->offset_y : s->offset_x;
+	size = is_vertical(h) ? s->viewport_h : s->viewport_w;
+	for (i = 0; i < n; i++) {
+		const zrn_element_t* const sec = h->host->children[i];
+		const float a = is_vertical(h) ? sec->rect.y - sec->margin.top : sec->rect.x - sec->margin.left;
+		const float b = is_vertical(h) ? sec->rect.y + sec->rect.height : sec->rect.x + sec->rect.width;
+		if (sec->visibility == Z_COLLAPSED) continue;
+		if (b > offset + 0.5 && a < offset + size - 0.5) {
+			if (*count == 0) *first = i;
+			*count = i - *first + 1;
+		}
+	}
+}
+
+
+/* ============================================================================
+ *  The ring (IsLooping)
+ * ============================================================================ */
+
+/** How far from the ends of the extent the offset is kept: a fling in a frame goes less. */
+static constexpr float RING_ROOM = 120.0f;
+
+static int is_looping(const zrn_hub_t* const h) { return h->b_looping && !is_vertical(h) && h->scroll && section_count(h) > 1; }
+
+static float stride_of(const zrn_element_t* const sec) { return sec->desired.width; }
+
+static void rotate_to_back(zrn_hub_t* const h) {
+	zrn_element_t** const list = h->host->children;
+	const int n = section_count(h);
+	zrn_element_t* const first = list[0];
+	memmove(list, list + 1, (size_t)(n - 1) * sizeof *list);
+	list[n - 1] = first;
+	h->rot = (h->rot + 1) % n;
+	zrn_scroll_viewer_shift_x(h->scroll, -stride_of(first));
+	h->unwound += stride_of(first);
+}
+
+static void rotate_to_front(zrn_hub_t* const h) {
+	zrn_element_t** const list = h->host->children;
+	const int n = section_count(h);
+	zrn_element_t* const last = list[n - 1];
+	memmove(list + 1, list, (size_t)(n - 1) * sizeof *list);
+	list[0] = last;
+	h->rot = (h->rot + n - 1) % n;
+	zrn_scroll_viewer_shift_x(h->scroll, stride_of(last));
+	h->unwound -= stride_of(last);
+}
+
+/** The ranks of the sections are their places in the order of the API; the StackPanel is in that order when rot is 0. */
+static void ring_renumber(zrn_hub_t* const h) {
+	const int n = section_count(h);
+	for (int i = 0; i < n; i++) SECTION(h->host->children[i])->rank = i;
+	h->known_n = n;
+}
+
+/** A section destroyed with Zelement_destroy (not through the hub) leaves rot, unwound and the extra extent for another count: the order of the API comes back by the ranks, and the ring starts over. */
+static void ring_validate(zrn_hub_t* const h) {
+	zrn_element_t** const list = h->host ? h->host->children : nullptr;
+	const int n = section_count(h);
+	if (!list || n == h->known_n) return;
+	for (int i = 1; i < n; i++) {
+		zrn_element_t* const moved = list[i];
+		int j = i - 1;
+		while (j >= 0 && SECTION(list[j])->rank > SECTION(moved)->rank) { list[j + 1] = list[j]; j--; }
+		list[j + 1] = moved;
+	}
+	h->rot = 0;
+	h->unwound = 0;
+	if (h->scroll) {
+		zrn_scroll_viewer_set_extra_extent_x(h->scroll, 0);
+		zrn_changed_arrange(h->scroll);
+	}
+	ring_renumber(h);
+	h->b_view_dirty = true;
+}
+
+/** The sections back in the order of the API; the offset goes with them, the picture stays. */
+static void ring_undo(zrn_hub_t* const h) {
+	if (!h->host || !h->scroll) return;
+	ring_validate(h);
+	const int n = section_count(h);
+	/* the sections that went round come back the shorter way: a section on its way is a jump of the picture, the ones
+	 * that cost the least are the ones the ring keeps off the screen, at the ends */
+	if (n > 1) {
+		const int back = (n - h->rot) % n;
+		if (h->rot <= back) while (h->rot != 0) rotate_to_front(h);
+		else for (int i = 0; i < back; i++) rotate_to_back(h);
+	}
+	h->rot = 0;
+	h->unwound = 0;
+	zrn_scroll_viewer_set_extra_extent_x(h->scroll, 0);
+	zrn_changed_arrange(h->scroll);
+	ring_renumber(h);
+}
+
+/** Keeps the offset away from both ends by moving sections round; gives the extent the room it needs. @return 1 when a section moved. */
+static bool ring_keep(zrn_hub_t* const h) {
+	const zrn_scroll_viewer_t* const sv = scroll_of(h);
+	float circle = 0, widest = 0, extra, max_offset;
+	int i, n;
+	bool b_moved = false;
+	ring_validate(h);
+	n = section_count(h);
+	if (!is_looping(h)) return 0;
+	for (i = 0; i < n; i++) {
+		const float w = stride_of(h->host->children[i]);
+		circle += w;
+		widest = zrn_maxf(widest, w);
+	}
+	if (circle <= 0 || widest <= 0) return 0;
+	extra = zrn_maxf(0, (float)sv->viewport_w + 2 * RING_ROOM + widest - circle);
+	zrn_scroll_viewer_set_extra_extent_x(h->scroll, extra);
+	max_offset = circle + extra - (float)sv->viewport_w;
+	for (i = 0; i < n; i++) {
+		if (sv->offset_x < RING_ROOM) rotate_to_front(h);
+		else if (sv->offset_x > max_offset - RING_ROOM) rotate_to_back(h);
+		else break;
+		b_moved = true;
+	}
+	return b_moved;
+}
+
+/** Where the hub is on the ring, 0 to the length of the ring: what the header goes by. */
+static double ring_place(const zrn_hub_t* const h, const double offset, double* const circle) {
+	double c = 0, v = offset + h->unwound;
+	int i;
+	for (i = 0; i < section_count(h); i++) c += stride_of(h->host->children[i]);
+	*circle = c;
+	if (c > 0) {
+		v = fmod(v, c);
+		if (v < 0) v += c;
+	}
+	return v;
+}
+
+/* The scroller moved: the sections in view may be others. */
+static void hub_scrolled(const Zid scroll, const ZScrollEventType type, const double value, void* const user_data) {
+	zrn_element_t* const e = zrn_lookup((Zid)(uintptr_t)user_data);
+	int first, count;
+	ZRN_UNUSED(scroll); ZRN_UNUSED(type); ZRN_UNUSED(value);
+	if (!e) return;
+	zrn_hub_t* h = HUB(e);
+	if (ring_keep(h)) {
+		/* the sections are at other places than the rects say until the next arrange, which tells the view */
+		h->b_view_dirty = true;
+		zrn_changed_arrange(e);
+		zrn_changed_paint(e);
+		return;
+	}
+	view_range(h, &first, &count);
+	if (first == h->view_first && count == h->view_count) {
+		zrn_changed_paint(e);
+		return;
+	}
+	h->view_first = first;
+	h->view_count = count;
+	zrn_changed_paint(e);
+	zrn_raise(e, Z_EVENT_SECTIONS_IN_VIEW_CHANGED);
+}
+
+static ZSize hub_measure(zrn_element_t* const e, const ZSize available) {
+	const auto h = HUB(e);
+	const float w = available.width < Z_INFINITE * 0.5f ? available.width : 480.0f;
+	const float hh = available.height < Z_INFINITE * 0.5f ? available.height : 800.0f;
+	h->view_width = w;
+	if (h->scroll) zrn_measure(h->scroll, zrn_size(w, hh));
+	return zrn_size(w, hh);
+}
+
+static ZSize hub_arrange(zrn_element_t* const e, const ZSize final) {
+	const auto h = HUB(e);
+	int first, count;
+	if (ring_keep(h)) h->b_view_dirty = true;
+	if (h->scroll) zrn_arrange(h->scroll, zrn_rect(0, 0, final.width, final.height));
+	/* the sections are where they are now: the range is quietly the one of the layout, unless a section went round on a scroll */
+	view_range(h, &first, &count);
+	if (h->b_view_dirty && (first != h->view_first || count != h->view_count)) {
+		h->view_first = first;
+		h->view_count = count;
+		h->b_view_dirty = false;
+		h->b_view_event_pending = true;
+		e->b_wants_tick = true;
+		return final;
+	}
+	h->view_first = first;
+	h->view_count = count;
+	h->b_view_dirty = false;
+	return final;
+}
+
+/** Last: the handler may destroy the hub. */
+static void hub_tick(zrn_element_t* const e, const float delta_ms) {
+	zrn_hub_t* const h = HUB(e);
+	ZRN_UNUSED(delta_ms);
+	e->b_wants_tick = false;
+	if (!h->b_view_event_pending) return;
+	h->b_view_event_pending = false;
+	zrn_raise(e, Z_EVENT_SECTIONS_IN_VIEW_CHANGED);
+}
+
+static void hub_paint(zrn_element_t* const e, zrn_painter_t* const p) {
+	const zrn_hub_t* const h = HUB(e);
+	zrn_scroll_viewer_t* const s = scroll_of(h);
+	float x = HUB_HEADER_X, y = HUB_HEADER_Y;
+	if (!h->header || !*h->header || !s) return;
+	/* the header goes with the sections at half the speed; vertically it scrolls away with them */
+	if (is_vertical(h)) y -= (float)s->offset_y;
+	else if (is_looping(h)) {
+		/* on a ring the header goes round with the half of it: the same text a period on, so that the seam does not show */
+		double circle;
+		const double place = ring_place(h, s->offset_x, &circle);
+		const float period = (float)(circle * HEADER_PARALLAX);
+		x -= (float)place * HEADER_PARALLAX;
+		zrn_draw_string(p, hub_header_font(h), h->header, (int)strlen(h->header), x, y, zrn_ctl_foreground(&h->base));
+		if (period > 0) x += period;
+	}
+	else x -= (float)s->offset_x * HEADER_PARALLAX;
+	zrn_draw_string(p, hub_header_font(h), h->header, (int)strlen(h->header), x, y, zrn_ctl_foreground(&h->base));
+}
+
+static void hub_apply_orientation(const zrn_hub_t* const h) {
+	if (!h->host || !h->scroll) return;
+	Zstack_panel_set_orientation(h->host->id, h->orientation);
+	if (is_vertical(h)) {
+		Zscroll_viewer_set_vertical_scrollbar_visibility(h->scroll->id, Z_SCROLLBAR_HIDDEN);
+		Zscroll_viewer_set_horizontal_scrollbar_visibility(h->scroll->id, Z_SCROLLBAR_DISABLED);
+	} else {
+		Zscroll_viewer_set_horizontal_scrollbar_visibility(h->scroll->id, Z_SCROLLBAR_HIDDEN);
+		Zscroll_viewer_set_vertical_scrollbar_visibility(h->scroll->id, Z_SCROLLBAR_DISABLED);
+	}
+}
+
+static void hub_init(zrn_element_t* const e) {
+	const auto h = HUB(e);
+	zrn_element_t* const scroll = zrn_create(Z_CLASS_SCROLL_VIEWER);
+	zrn_element_t* const host = zrn_create(Z_CLASS_STACK_PANEL);
+	e->b_focusable = false;
+	e->b_clip_to_bounds = true;
+	h->orientation = Z_HORIZONTAL;
+	h->b_looping = true;
+	if (!scroll || !host) {
+		if (scroll) zrn_destroy(scroll);
+		if (host) zrn_destroy(host);
+		return;
+	}
+	zrn_add_child(e, scroll, -1);
+	h->scroll = scroll;
+	h->host = host;
+	Zscroll_viewer_set_content(scroll->id, host->id);
+	Zscroll_viewer_on_scroll(scroll->id, hub_scrolled, (void*)(uintptr_t)e->id);
+	hub_apply_orientation(h);
+}
+
+static void hub_destroy(zrn_element_t* const e) {
+	free(HUB(e)->header);
+	HUB(e)->header = nullptr;
+}
+
+static void hub_child_removed(zrn_element_t* const e, zrn_element_t* const child) {
+	const auto h = HUB(e);
+	if (h->scroll == child) {
+		h->scroll = nullptr;
+		h->host = nullptr;
+	}
+}
+
+zrn_class_t zrn_class_hub = {
+	.base = &zrn_class_control, .name = "Hub", .id = Z_CLASS_HUB, .size = sizeof(zrn_hub_t),
+	.init = hub_init, .destroy = hub_destroy, .measure = hub_measure, .arrange = hub_arrange, .paint = hub_paint,
+	.tick = hub_tick, .child_removed = hub_child_removed
+};
+
+Zid Zhub_create(void) {
+	const zrn_element_t* const e = zrn_create(Z_CLASS_HUB);
+	return e ? e->id : Z_INVALID_ID;
+}
+
+static zrn_hub_t* get_hub(const Zid id) { return HUB(zrn_get(id, Z_CLASS_HUB)); }
+
+void Zhub_set_header(const Zid hub, const char* const header) {
+	zrn_hub_t* const h = get_hub(hub);
+	if (!h) return;
+	zrn_set_string(&h->header, header ? header : "");
+	zrn_changed_layout(&h->base.base);
+}
+
+const char* Zhub_get_header(const Zid hub) {
+	const zrn_hub_t* const h = get_hub(hub);
+	return h && h->header ? h->header : "";
+}
+
+void Zhub_set_is_looping(const Zid hub, const bool is_looping) {
+	zrn_hub_t* const h = get_hub(hub);
+	if (!h || h->b_looping == (is_looping != 0)) return;
+	ring_undo(h);
+	h->b_looping = is_looping != 0;
+	zrn_changed_layout(&h->base.base);
+}
+
+bool Zhub_get_is_looping(const Zid hub) {
+	const zrn_hub_t* const h = get_hub(hub);
+	return h ? h->b_looping : 0;
+}
+
+void Zhub_set_orientation(const Zid hub, const ZOrientation orientation) {
+	zrn_hub_t* const h = get_hub(hub);
+	if (!h || (orientation != Z_HORIZONTAL && orientation != Z_VERTICAL)) return;
+	ring_undo(h);
+	h->orientation = orientation;
+	hub_apply_orientation(h);
+	if (h->scroll) {
+		Zscroll_viewer_scroll_to_horizontal_offset(h->scroll->id, 0);
+		Zscroll_viewer_scroll_to_vertical_offset(h->scroll->id, 0);
+	}
+	zrn_changed_layout(&h->base.base);
+}
+
+ZOrientation Zhub_get_orientation(const Zid hub) {
+	const zrn_hub_t* const h = get_hub(hub);
+	return h ? h->orientation : Z_HORIZONTAL;
+}
+
+Zid Zhub_get_scroll_viewer(const Zid hub) {
+	const zrn_hub_t* const h = get_hub(hub);
+	return h && h->scroll ? h->scroll->id : Z_INVALID_ID;
+}
+
+int Zhub_insert_section(Zid hub, int index, Zid hub_section) {
+	zrn_hub_t* const h = get_hub(hub);
+	zrn_element_t* const s = hub_section != Z_INVALID_ID ? zrn_get(hub_section, Z_CLASS_HUB_SECTION) : nullptr;
+	if (!h || !s || !h->host) return -1;
+	if (s->parent) {
+		zrn_error(Z_ERROR_HAS_PARENT, "the HubSection is in a hub already");
+		return -1;
+	}
+	ring_undo(h);
+	if (index < 0 || index > h->host->child_count) index = h->host->child_count;
+	const int before = h->host->child_count;
+	zrn_add_child(h->host, s, index);
+	if (h->host->child_count == before) return -1; /* out of memory, or the section could not be added */
+	ring_renumber(h);
+	zrn_changed_layout(&h->base.base);
+	return index;
+}
+
+int Zhub_add_section(const Zid hub, const Zid hub_section) {
+	const zrn_hub_t* const h = get_hub(hub);
+	return h ? Zhub_insert_section(hub, section_count(h), hub_section) : -1;
+}
+
+void Zhub_remove_section_at(const Zid hub, const int index) {
+	zrn_hub_t* const h = get_hub(hub);
+	if (!h || index < 0 || index >= section_count(h)) return;
+	ring_undo(h);
+	zrn_destroy(h->host->children[index]);
+	ring_renumber(h);
+	zrn_changed_layout(&h->base.base);
+}
+
+void Zhub_clear_sections(const Zid hub) {
+	zrn_hub_t* const h = get_hub(hub);
+	if (h) ring_undo(h);
+	while (h && section_count(h) > 0) zrn_destroy(h->host->children[section_count(h) - 1]);
+	if (h) {
+		ring_renumber(h);
+		zrn_changed_layout(&h->base.base);
+	}
+}
+
+int Zhub_get_section_count(const Zid hub) {
+	const zrn_hub_t* const h = get_hub(hub);
+	return h ? section_count(h) : 0;
+}
+
+Zid Zhub_get_section(const Zid hub, const int index) {
+	zrn_hub_t* const h = get_hub(hub);
+	if (h) ring_validate(h);
+	return h && index >= 0 && index < section_count(h) ? h->host->children[physical_index(h, index)]->id : Z_INVALID_ID;
+}
+
+void Zhub_scroll_to_section(const Zid hub, const int index) {
+	zrn_hub_t* const h = get_hub(hub);
+	if (!h) return;
+	ring_validate(h);
+	if (index < 0 || index >= section_count(h) || !h->scroll) return;
+	/* what the last layout knows: the margin box of the section at the left edge of the view */
+	zrn_element_t* sec = h->host->children[physical_index(h, index)];
+	if (is_vertical(h)) Zscroll_viewer_scroll_to_vertical_offset(h->scroll->id, sec->rect.y - sec->margin.top);
+	else Zscroll_viewer_scroll_to_horizontal_offset(h->scroll->id, sec->rect.x - sec->margin.left);
+}
+
+int Zhub_get_sections_in_view_count(const Zid hub) {
+	zrn_hub_t* const h = get_hub(hub);
+	int first, count;
+	if (!h) return 0;
+	view_range(h, &first, &count);
+	return count;
+}
+
+Zid Zhub_get_section_in_view(const Zid hub, const int index) {
+	zrn_hub_t* const h = get_hub(hub);
+	int first, count;
+	if (!h) return Z_INVALID_ID;
+	ring_validate(h);
+	view_range(h, &first, &count);
+	return index >= 0 && index < count ? h->host->children[first + index]->id : Z_INVALID_ID;
+}
+
+void Zhub_on_sections_in_view_changed(const Zid hub, const ZRoutedCallback callback, void* const user_data) {
+	if (get_hub(hub)) Zelement_on(hub, Z_EVENT_SECTIONS_IN_VIEW_CHANGED, callback, user_data);
+}
+
+void Zhub_on_section_header_click(const Zid hub, const ZHubSectionHeaderClickCallback callback, void* const user_data) {
+	zrn_hub_t* const h = get_hub(hub);
+	if (!h) return;
+	h->header_click = callback;
+	h->header_click_data = user_data;
+}
+
+Zid Zhub_section_create(const char* const header) {
+	zrn_element_t* const e = zrn_create(Z_CLASS_HUB_SECTION);
+	if (!e) return Z_INVALID_ID;
+	zrn_set_string(&SECTION(e)->header, header ? header : "");
+	return e->id;
+}
+
+void Zhub_section_set_header(const Zid hub_section, const char* const header) {
+	zrn_element_t* const e = zrn_get(hub_section, Z_CLASS_HUB_SECTION);
+	if (!e) return;
+	zrn_set_string(&SECTION(e)->header, header ? header : "");
+	zrn_changed_layout(e);
+}
+
+const char* Zhub_section_get_header(const Zid hub_section) {
+	zrn_element_t* const e = zrn_get(hub_section, Z_CLASS_HUB_SECTION);
+	return e && SECTION(e)->header ? SECTION(e)->header : "";
+}
+
+void Zhub_section_set_is_header_interactive(const Zid hub_section, const bool is_interactive) {
+	zrn_element_t* const e = zrn_get(hub_section, Z_CLASS_HUB_SECTION);
+	if (e) SECTION(e)->b_interactive = is_interactive != 0;
+}
+
+void Zhub_section_set_width_multiple(const Zid hub_section, const float multiple) {
+	zrn_element_t* const e = zrn_get(hub_section, Z_CLASS_HUB_SECTION);
+	if (!e) return;
+	SECTION(e)->width_multiple = multiple > 0 ? multiple : 0;
+	zrn_changed_layout(e);
+}
+
+float Zhub_section_get_width_multiple(const Zid hub_section) {
+	zrn_element_t* const e = zrn_get(hub_section, Z_CLASS_HUB_SECTION);
+	return e ? SECTION(e)->width_multiple : 0;
+}
+
+bool Zhub_section_get_is_header_interactive(const Zid hub_section) {
+	zrn_element_t* const e = zrn_get(hub_section, Z_CLASS_HUB_SECTION);
+	return e ? SECTION(e)->b_interactive : 0;
+}
