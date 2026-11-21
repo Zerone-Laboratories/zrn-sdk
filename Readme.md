@@ -13,6 +13,7 @@ An ordinary Wayland application links both.
 
 **Documentation:** [zrnui/docs/index.md](zrnui/docs/index.md) - getting started, every widget, theme, embedding.
 **Publishing:** [docs/publishing.md](docs/publishing.md) - from a working app to an app in the ztOS store.
+**How the shell draws:** [docs/composition.md](docs/composition.md) - the layers of a ztMETRO frame, their order, and what that means for an app.
 
 ## Hello world
 
