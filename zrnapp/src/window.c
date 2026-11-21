@@ -10,12 +10,15 @@
 
 #include "app_id.h"
 #include "egl_window.h"
+#include "shell_theme.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
@@ -77,7 +80,42 @@ typedef struct window {
 	/** The ZKey that the press of an evdev key sent, so that its release sends the same one whatever the modifiers are by then. */
 	ZKey pressed_key[256];
 	int touch_id;
+	/** The shell's theme: an inotify on the directory of its config file (it is renamed over, so the file itself is not watched), -1 when not followed. */
+	int theme_fd;
+	char theme_path[512];
+	/** The text box that has the keyboard now, Z_INVALID_ID when none; the bottom of it last told to the shell. */
+	Zid osk_focus;
+	/** Frames put on the screen so far: the animations stand still until the first two are out (the first paints are the slow
+	 * ones, fonts and shaders warming up, and the page's entrance would be over before anyone sees it). */
+	int frames_shown;
+	/** ZTMETRO_ENTER_MS: when the shell uncovers this window after Start has turned away (CLOCK_MONOTONIC ms, 32 bits);
+	 * the animations wait for it too, so the page's entrance is seen, not played behind the cover. 0 when not launched so. */
+	uint32_t enter_at;
+	int osk_told;
+	/** The shell's own word on its keyboard ($XDG_RUNTIME_DIR/ztmetro-osk): an inotify on the runtime directory (-1 when not followed), the last height it gave while shown (0 none yet: the estimate from the config stands in), the inset applied now. */
+	int osk_fd;
+	char osk_path[300];
+	float osk_real;
+	float osk_applied;
+	/** The frame callback of the last frame shown (wl_surface.frame): no new frame is drawn until the compositor
+	 * says it showed the last one, so frames go out at the pace of the screen and none is drawn to be thrown away. */
+	struct wl_callback* frame_cb;
+	double frame_cb_at;
+	/** ZRNAPP_NO_FRAME_CALLBACK: the old pacing (a frame every turn of the loop), for comparison. */
+	bool b_no_frame_cb;
+	/** ZRNUI_FRAME_LOG: a line per frame on stderr (the times of tick, paint and swap, what the renderer did). */
+	bool b_frame_log;
+	double last_frame_at;
+	double tick_ms;
 } window_t;
+
+static ZInputPaneCallback g_pane_callback;
+static void* g_pane_data;
+
+void Zwindow_on_input_pane(const ZInputPaneCallback callback, void* const user_data) {
+	g_pane_callback = callback;
+	g_pane_data = user_data;
+}
 
 static window_t* g_window;
 /** The last position of the pointer or the finger: a button or a lift carries no position of its own. */
@@ -130,10 +168,45 @@ static bool buffers_make(window_t* const w, const int pw, const int ph) {
 	return true;
 }
 
-/* One frame on the GPU: painted only when something changed, then swapped. */
+static double now_ms(void);
+
+static void frame_done(void* const d, struct wl_callback* const cb, const uint32_t time) {
+	const auto w = (window_t*)d;
+	(void)time;
+	wl_callback_destroy(cb);
+	if (w->frame_cb == cb) w->frame_cb = nullptr;
+}
+static const struct wl_callback_listener frame_listener = { .done = frame_done };
+
+/* One frame on the GPU: painted only when something changed, then swapped; not while the compositor has not shown the last one. */
 static void present_gl(window_t* const w) {
 	const int pw = (int)((float)w->width * w->fscale + 0.5f), ph = (int)((float)w->height * w->fscale + 0.5f);
-	zrnapp_gl_present(w->gl, w->root, pw, ph);
+	if (w->frame_cb) {
+		/* a compositor that hides the window (the screen off) sends no done: after 50 ms the frame goes out anyway, so a
+		 * compositor that never sends it costs smoothness, not the app */
+		if (now_ms() - w->frame_cb_at < 50.0) return;
+		wl_callback_destroy(w->frame_cb);
+		w->frame_cb = nullptr;
+	}
+	const double t0 = w->b_frame_log ? now_ms() : 0;
+	const double tl = t0;
+	if (!zrnapp_gl_paint(w->gl, w->root, pw, ph)) return;
+	const double t1 = w->b_frame_log ? now_ms() : 0;
+	if (!w->b_no_frame_cb) {
+		w->frame_cb = wl_surface_frame(w->surface);
+		wl_callback_add_listener(w->frame_cb, &frame_listener, w);
+		w->frame_cb_at = now_ms();
+	}
+	zrnapp_gl_swap(w->gl);
+	w->frames_shown++;
+	if (!w->b_frame_log) return;
+	const double t2 = now_ms();
+	ZRenderStats st;
+	Zrender_take_stats(&st);
+	fprintf(stderr, "zrnui-frame dt=%.1f tick=%.2f paint=%.2f swap=%.2f draws=%u quads=%u glyphs=%u images=%u upKB=%u layers=%u/%u raster=%.1f layerms=%.1f alloc=%.1f bd=%u bdms=%.2f by=%s\n",
+		w->last_frame_at > 0 ? t0 - w->last_frame_at : 0.0, w->tick_ms, t1 - tl, t2 - t1, st.draws, st.quads, st.glyph_uploads,
+		st.image_uploads, st.upload_kb, st.layer_paints, st.layer_draws, (double)st.raster_ms, (double)st.layer_ms, (double)st.alloc_ms, st.backdrop_passes, (double)st.backdrop_ms, st.layout_by ? st.layout_by : "-");
+	w->last_frame_at = t0;
 }
 
 /** @param b_force a commit is due although nothing changed: the first one, and the one the compositor waits for after a configure */
@@ -170,6 +243,167 @@ static void present(window_t* const w, const bool b_force) {
 	wl_surface_attach(w->surface, b->buffer, 0, 0);
 	wl_surface_damage_buffer(w->surface, 0, 0, pw, ph);
 	wl_surface_commit(w->surface);
+	w->frames_shown++;
+}
+
+/* ---- the theme of the shell ---- */
+
+/** Gives the root the theme and the accent the shell's config file says; what it does not say stays as it is. */
+static void theme_apply(window_t* const w) {
+	zrnapp_shell_theme_t t;
+	zrnapp_shell_theme_read(w->theme_path, &t);
+	if (t.b_has_theme) Zroot_set_theme(w->root, t.theme);
+	if (t.b_has_accent) Zroot_set_accent_color(w->root, t.accent);
+	Zset_frosted_diffusion_enabled(t.b_frost);
+}
+
+/** Reads the theme once and watches the directory of the file for the shell writing it again. */
+static void theme_follow(window_t* const w) {
+	w->theme_fd = -1;
+	if (!zrnapp_shell_theme_path(w->theme_path, sizeof w->theme_path)) return;
+	/* the first one is the theme the app opens in: no cross-fade from the default */
+	const ZAnimations animations = Zroot_get_animations(w->root);
+	Zroot_set_animations(w->root, Z_ANIMATIONS_OFF);
+	theme_apply(w);
+	Zroot_set_animations(w->root, animations);
+	char dir[sizeof w->theme_path];
+	snprintf(dir, sizeof dir, "%s", w->theme_path);
+	char* const slash = strrchr(dir, '/');
+	if (!slash) return;
+	if (slash == dir) slash[1] = '\0';
+	else *slash = '\0';
+	w->theme_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+	if (w->theme_fd < 0) return;
+	if (inotify_add_watch(w->theme_fd, dir, IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE) < 0) {
+		close(w->theme_fd);
+		w->theme_fd = -1;
+	}
+}
+
+/** Drains the inotify events; the theme is read again when one is about the config file. */
+static void theme_events(window_t* const w) {
+	const char* const slash = strrchr(w->theme_path, '/');
+	const char* const name = slash ? slash + 1 : w->theme_path;
+	alignas(struct inotify_event) char buffer[4096];
+	bool b_changed = false;
+	for (;;) {
+		const ssize_t n = read(w->theme_fd, buffer, sizeof buffer);
+		if (n <= 0) break;
+		for (ssize_t at = 0; at < n;) {
+			const struct inotify_event* const ev = (const struct inotify_event*)(buffer + at);
+			if (ev->len > 0 && strcmp(ev->name, name) == 0) b_changed = true;
+			at += (ssize_t)sizeof *ev + ev->len;
+		}
+	}
+	if (b_changed) theme_apply(w);
+}
+
+/* ---- the keyboard (InputPane) ---- */
+
+/** A line down the control pipe of the shell ($XDG_RUNTIME_DIR/ztmetro.ctl), as ZrnMetroCore's apps ask for the keyboard. */
+static void osk_tell(const char* const line) {
+	const char* const runtime = getenv("XDG_RUNTIME_DIR");
+	char path[300];
+	if (!runtime) return;
+	snprintf(path, sizeof path, "%s/ztmetro.ctl", runtime);
+	const int fd = open(path, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0) return;
+	if (write(fd, line, strlen(line)) < 0) {}
+	close(fd);
+}
+
+static bool is_text_box(const Zid e) {
+	return Zelement_is_a(e, Z_CLASS_TEXT_BOX) || Zelement_is_a(e, Z_CLASS_PASSWORD_BOX) || Zelement_is_a(e, Z_CLASS_AUTO_SUGGEST_BOX);
+}
+
+/** The bottom of an element in the window: its bounds, up the parents. */
+static float bottom_in_window(Zid e) {
+	const ZRect own = Zelement_get_bounds(e);
+	float y = own.y + own.height;
+	for (e = Zelement_get_parent(e); e != Z_INVALID_ID; e = Zelement_get_parent(e)) y += Zelement_get_bounds(e).y;
+	return y;
+}
+
+/** The height to give the root: what the shell last published, else the estimate from its config. */
+static float osk_height(window_t* const w) {
+	if (w->osk_real > 0) return w->osk_real;
+	zrnapp_shell_theme_t t;
+	if (!w->theme_path[0]) zrnapp_shell_theme_path(w->theme_path, sizeof w->theme_path);
+	zrnapp_shell_theme_read(w->theme_path, &t);
+	return t.keyboard_height;
+}
+
+static void osk_apply(window_t* const w, const float height) {
+	w->osk_applied = height;
+	Zroot_set_input_pane_height(w->root, height);
+	if (g_pane_callback) g_pane_callback(height, g_pane_data);
+}
+
+/** Reads the shell's file; while a text box has the keyboard, a new height is applied at once. */
+static void osk_file_read(window_t* const w) {
+	float h;
+	bool b_visible;
+	if (!zrnapp_shell_osk_read(w->osk_path, &h, &b_visible) || !b_visible || h <= 0) return;
+	w->osk_real = h;
+	if (w->osk_focus != Z_INVALID_ID && h != w->osk_applied) {
+		osk_apply(w, h);
+		w->osk_told = -1;	/* the box moved: tell the shell its bottom again */
+	}
+}
+
+/** Watches the runtime directory for the shell renaming its keyboard file over (no polling). */
+static void osk_file_follow(window_t* const w) {
+	w->osk_fd = -1;
+	if (!zrnapp_shell_osk_path(w->osk_path, sizeof w->osk_path)) return;
+	osk_file_read(w);
+	const char* const runtime = getenv("XDG_RUNTIME_DIR");
+	w->osk_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+	if (w->osk_fd < 0) return;
+	if (inotify_add_watch(w->osk_fd, runtime, IN_CLOSE_WRITE | IN_MOVED_TO) < 0) {
+		close(w->osk_fd);
+		w->osk_fd = -1;
+	}
+}
+
+static void osk_file_events(window_t* const w) {
+	alignas(struct inotify_event) char buffer[4096];
+	bool b_changed = false;
+	for (;;) {
+		const ssize_t n = read(w->osk_fd, buffer, sizeof buffer);
+		if (n <= 0) break;
+		for (ssize_t at = 0; at < n;) {
+			const struct inotify_event* const ev = (const struct inotify_event*)(buffer + at);
+			if (ev->len > 0 && strcmp(ev->name, "ztmetro-osk") == 0) b_changed = true;
+			at += (ssize_t)sizeof *ev + ev->len;
+		}
+	}
+	if (b_changed) osk_file_read(w);
+}
+
+/** Follows the focus: a text box gets the shell's keyboard and the root shrinks above it; leaving it puts the keyboard away. */
+static void osk_follow(window_t* const w) {
+	const Zid focus = Zroot_get_focus(w->root);
+	const Zid box = focus != Z_INVALID_ID && is_text_box(focus) ? focus : Z_INVALID_ID;
+	if (box == Z_INVALID_ID) {
+		if (w->osk_focus == Z_INVALID_ID) return;
+		w->osk_focus = Z_INVALID_ID;
+		w->osk_told = -1;
+		osk_tell("osk hide\n");
+		osk_apply(w, 0);
+		return;
+	}
+	const bool b_new = w->osk_focus == Z_INVALID_ID;
+	w->osk_focus = box;
+	if (b_new) osk_apply(w, osk_height(w));
+	/* where the box ends after the root shrank: above the keyboard, so the shell lifts nothing */
+	Zroot_update_layout(w->root);
+	const int bottom = (int)(bottom_in_window(box) + 0.5f);
+	if (!b_new && bottom == w->osk_told) return;
+	w->osk_told = bottom;
+	char line[48];
+	/* "resize": this window shrinks its root above the keyboard itself, so the shell must not lift it as well */
+	snprintf(line, sizeof line, "osk show %d resize\n", bottom);
+	osk_tell(line);
 }
 
 /* ---- scaling ---- */
@@ -486,8 +720,17 @@ bool Zwindow_run_ex(const Zid root, const ZWindowOptions* const options) {
 	w.height = root_height > 0 ? root_height : 800;
 	if (root_width <= 0) Zroot_set_size(root, w.width, w.height);
 	w.touch_id = -1;
+	w.theme_fd = -1;
+	w.osk_fd = -1;
+	w.osk_focus = Z_INVALID_ID;
+	w.osk_told = -1;
 	w.repeat_delay = 500.0f; /* until the compositor says (wl_keyboard.repeat_info, version 4) */
 	w.repeat_interval = 33.0f;
+	w.b_no_frame_cb = getenv("ZRNAPP_NO_FRAME_CALLBACK") != nullptr;
+	{
+		const char* const log = getenv("ZRNUI_FRAME_LOG");
+		w.b_frame_log = log && *log && *log != '0';
+	}
 	w.env_scale = scale_of_env(scale_env);
 	/* only the numbers now; the surface is not created yet, apply_scale runs on it after */
 	w.fscale = w.env_scale > 0 ? w.env_scale : 1.0f;
@@ -547,37 +790,65 @@ bool Zwindow_run_ex(const Zid root, const ZWindowOptions* const options) {
 		}
 	}
 	Zroot_report_presenter(root, w.gl ? "gles2" : "software", w.gl != nullptr);
+	if (!options || !options->b_keep_theme) theme_follow(&w);
+	osk_file_follow(&w);
 	/* a first page that went into the Frame before this window existed swings in now */
 	Zroot_start_intro(root);
 	last = now_ms();
+	if (const char* const enter = getenv("ZTMETRO_ENTER_MS")) {
+		const uint32_t at = (uint32_t)strtoul(enter, nullptr, 10);
+		const int32_t ahead = (int32_t)(at - (uint32_t)last);
+		/* a stale or absurd stamp (an app started again by hand from a launched shell) holds nothing */
+		if (ahead > 0 && ahead < 3000) w.enter_at = at;
+	}
 	while (!w.b_closed) {
-		struct pollfd pfd;
+		struct pollfd pfd[3];
 		double t, dt;
 		while (wl_display_prepare_read(w.display) != 0) wl_display_dispatch_pending(w.display);
 		/* a full socket (a slow compositor) is not the end: the loop waits until it can be written to */
 		const bool b_flush_failed = wl_display_flush(w.display) < 0;
 		if (b_flush_failed && errno != EAGAIN) { wl_display_cancel_read(w.display); break; }
-		pfd.fd = wl_display_get_fd(w.display);
-		pfd.events = (short)(POLLIN | (b_flush_failed ? POLLOUT : 0));
-		if (poll(&pfd, 1, 16) > 0 && (pfd.revents & POLLIN)) {
+		pfd[0].fd = wl_display_get_fd(w.display);
+		pfd[0].events = (short)(POLLIN | (b_flush_failed ? POLLOUT : 0));
+		pfd[0].revents = 0;
+		pfd[1].fd = w.theme_fd;	/* (a negative fd is skipped by poll) */
+		pfd[1].events = POLLIN;
+		pfd[1].revents = 0;
+		pfd[2].fd = w.osk_fd;
+		pfd[2].events = POLLIN;
+		pfd[2].revents = 0;
+		/* a frame waits for the done of the last one (it comes on the display fd); otherwise the loop wakes at least every 16 ms for the ticks */
+		const int ready = poll(pfd, 3, w.frame_cb ? 50 : 16);
+		if (ready > 0 && (pfd[0].revents & POLLIN)) {
 			if (wl_display_read_events(w.display) < 0) break;
 		} else {
 			wl_display_cancel_read(w.display);
 		}
+		if (ready > 0 && w.theme_fd >= 0 && (pfd[1].revents & POLLIN)) theme_events(&w);
+		if (ready > 0 && w.osk_fd >= 0 && (pfd[2].revents & POLLIN)) osk_file_events(&w);
 		wl_display_dispatch_pending(w.display);
 		if (!Zroot_get_size(root, nullptr, nullptr)) break;
 		t = now_ms();
 		dt = t - last;
 		last = t;
-		if (dt > 0) Zroot_tick(root, (float)dt);
+		/* a long frame (a page built, a list laid out) does not jump the animations ahead: at most two frames of 60 Hz
+		 * of animation time pass in one, so a turnstile or a fling is seen whole instead of skipping its first part */
+		if (w.enter_at && (int32_t)((uint32_t)t - w.enter_at) >= 0) w.enter_at = 0;
+		if (dt > 0) Zroot_tick(root, w.frames_shown < 2 || w.enter_at ? 0.0f : (float)(dt < 33.0 ? dt : 33.0));
+		if (w.b_frame_log) w.tick_ms = now_ms() - t;
 		if (w.repeat_key) {
 			w.repeat_timer += (float)dt;
 			if (!w.b_repeating && w.repeat_timer >= w.repeat_delay) { w.b_repeating = true; w.repeat_timer = 0; key_press(&w, (uint32_t)w.repeat_key); }
 			else if (w.b_repeating && w.repeat_timer >= w.repeat_interval) { w.repeat_timer -= w.repeat_interval; key_press(&w, (uint32_t)w.repeat_key); }
 		}
+		osk_follow(&w);
 		if (w.b_configured) present(&w, false);
 	}
+	if (w.osk_focus != Z_INVALID_ID) osk_tell("osk hide\n");
+	if (w.frame_cb) wl_callback_destroy(w.frame_cb);
 	g_window = nullptr;
+	if (w.theme_fd >= 0) close(w.theme_fd);
+	if (w.osk_fd >= 0) close(w.osk_fd);
 	buffers_free(&w);
 	const bool b_was_gpu = w.gl != nullptr;
 	if (w.gl) zrnapp_gl_destroy(w.gl);
@@ -604,6 +875,8 @@ bool Zwindow_run_ex(const Zid root, const ZWindowOptions* const options) {
 }
 
 void Zwindow_quit(void) {}
+
+void Zwindow_on_input_pane(const ZInputPaneCallback callback, void* const user_data) { (void)callback; (void)user_data; }
 
 #endif
 

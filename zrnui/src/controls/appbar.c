@@ -2,8 +2,8 @@
  * zrnui - controls/appbar.c
  * IconElement (SymbolIcon, FontIcon, PathIcon, BitmapIcon), AppBar, CommandBar, AppBarButton,
  * AppBarToggleButton and AppBarSeparator, after the Windows Phone 8.1 templates (generic.xaml of
- * the phone SDK): an app bar button is a 38.5 px circle with a 2.5 px outline, its icon inside it
- * and its label under it (9.5 px type); the numbers are used as they are.
+ * the phone SDK): an app bar button is a circle with an outline, its icon inside it and its label under
+ * it (9.5 px type); the sizes of the bar, the circle and the dots are measured on a phone (see below).
  *
  * The phone template of CommandBar is only a stub (the shell draws the real bar), so what the
  * XAML does not say is this library's own: the three dots at the right edge, the heights of
@@ -17,6 +17,7 @@
 #include "zrnui/internal/element.h"
 #include "zrnui/internal/theme.h"
 #include "zrnui/internal/text.h"
+#include "zrnui/internal/font.h"
 #include "zrnui/internal/image.h"
 #include "zrnui/internal/anim.h"
 #include "zrnui/internal/render/painter.h"
@@ -81,28 +82,31 @@ typedef struct zrn_app_bar_toggle_button {
 #define BAR(e) ZRN_AS(zrn_app_bar_t, e)
 #define CBAR(e) ZRN_AS(zrn_command_bar_t, e)
 
-/* AppBarThemeMinHeight 54.5, AppBarTopBorderThemeThickness 0,0,0,1.5 / AppBarBottomBorderThemeThickness 0,1.5,0,0 and the
- * theme padding of the other side: the closed bar of a page is 1.5 + 54.5 + 1.5 = 57.5, the MaxHeight of the CommandBar style. */
-static constexpr float BAR_ROW = 54.5f;
+/* The closed bar as a Windows Phone 8.1 phone draws it, measured on phone screenshots (480 x 853 effective pixels scaled
+ * to 360 points): 49 points of chrome under a 1.5 point border toward the content, so 1.5 + 47.5 + 1.5 = 50.5. The XAML's
+ * 54.5 / 57.5 are view pixels of a 400-wide phone and made the bar too tall here. */
+static constexpr float BAR_ROW = 47.5f;
 static constexpr float BAR_BORDER = 1.5f;
-static constexpr float BAR_COMPACT_HEIGHT = 57.5f;
+static constexpr float BAR_COMPACT_HEIGHT = 50.5f;
 /* The height of a Minimal bar: not in the XAML, chosen. */
 static constexpr float BAR_MINIMAL_HEIGHT = 35.0f;
 /* The opening of the bar: chosen. */
 static constexpr float BAR_OPEN_MS = 167.0f;
-/* The three dots that open the bar: not in the XAML, chosen. */
-static constexpr float ELLIPSIS_WIDTH = 30.0f;
-static constexpr float ELLIPSIS_DOT = 5.0f;
-static constexpr float ELLIPSIS_STEP = 8.5f;
+/* The three dots that open the bar: in the top right corner, level with the tops of the circles, not centred on them
+ * (measured: 3.5 point dots 7.5 apart, the middle one 27 from the right edge). The width is also where a press opens it. */
+static constexpr float ELLIPSIS_WIDTH = 54.0f;
+static constexpr float ELLIPSIS_DOT = 3.5f;
+static constexpr float ELLIPSIS_STEP = 7.5f;
 
-/* The AppBarButton template: the circle, its margins, the label and its width. */
-static constexpr float ITEM_CIRCLE = 38.5f;
-static constexpr float ITEM_OUTLINE = 2.5f;
-static constexpr float ITEM_TOP = 12.0f;
-static constexpr float ITEM_TOGGLE_TOP = 11.0f;
+/* The AppBarButton: the circle, its margins, the label and its width, measured on the phone (a 33 point circle with a
+ * 2 point ring, 8 under the top of the chrome, the buttons 59 apart and centred, as Windows Phone puts them). */
+static constexpr float ITEM_CIRCLE = 33.0f;
+static constexpr float ITEM_OUTLINE = 2.0f;
+static constexpr float ITEM_TOP = 8.0f;
+static constexpr float ITEM_TOGGLE_TOP = 7.0f;
 static constexpr float ITEM_GAP = 4.0f;
-static constexpr float ITEM_FULL_WIDTH = 80.0f;
-static constexpr float ITEM_COMPACT_WIDTH = 48.0f;
+static constexpr float ITEM_FULL_WIDTH = 59.0f;
+static constexpr float ITEM_COMPACT_WIDTH = 59.0f;
 static constexpr float ITEM_LABEL_WIDTH = 70.5f;
 static constexpr float ITEM_LABEL_FONT = 9.5f;
 static constexpr float ITEM_LABEL_BOTTOM = 10.5f;
@@ -314,7 +318,29 @@ static void draw_symbol(zrn_painter_t* const p, const ZSymbol symbol, const ZRec
 	}
 }
 
+/* A ZSymbol is a codepoint of Segoe UI Symbol (as Symbol is in XAML). With that font in the system the glyph itself is drawn,
+ * the same glyphs the shell draws, centred on its ink (not on the line box, which puts most glyphs low); without it, the
+ * vector shapes above. The glyph's em is the box's side: an em of 20 in the 20 point icon, as the app bar of the phone. */
+static bool draw_symbol_glyph(zrn_painter_t* const p, const ZSymbol symbol, const ZRect box, const ZColor c) {
+	if (!zrn_have_symbol_font()) return false;
+	FT_Face const ft = zrn_face(ZRN_FACE_SYMBOL);
+	if (!ft) return false;
+	const FT_UInt index = FT_Get_Char_Index(ft, (FT_ULong)symbol);
+	if (!index || FT_Load_Glyph(ft, index, FT_LOAD_NO_SCALE) != 0) return false;
+	const FT_Glyph_Metrics m = ft->glyph->metrics;
+	const float side = zrn_minf(box.width, box.height);
+	const zrn_font_t font = { .family = Z_FONT_SYMBOL, .size = side, .spacing = 0 };
+	const float k = side / (float)ft->units_per_EM;
+	const float ink_cx = ((float)m.horiBearingX + (float)m.width * 0.5f) * k, ink_cy = ((float)m.horiBearingY - (float)m.height * 0.5f) * k;
+	const float baseline = box.y + box.height * 0.5f + ink_cy;
+	char utf8[8];
+	const int n = zrn_utf8_encode((uint32_t)symbol, utf8);
+	zrn_draw_string(p, font, utf8, n, box.x + box.width * 0.5f - ink_cx, baseline - zrn_font_ascent(font), c);
+	return true;
+}
+
 static void symbol_icon_paint(zrn_element_t* const e, zrn_painter_t* const p) {
+	if (draw_symbol_glyph(p, ICON(e)->symbol, zrn_local_rect(e), icon_color(e))) return;
 	draw_symbol(p, ICON(e)->symbol, zrn_local_rect(e), icon_color(e));
 }
 
@@ -914,10 +940,10 @@ static ZRect ellipsis_rect(zrn_element_t* const e) {
 	return zrn_rect(e->rect.width - ELLIPSIS_WIDTH, 0, ELLIPSIS_WIDTH, e->rect.height);
 }
 
-/* Where the middle of the dots is, vertically: in line with the circles of the buttons, centred in a Minimal bar. */
+/* Where the middle of the dots is, vertically: their tops level with the tops of the circles, centred in a Minimal bar. */
 static float ellipsis_y(zrn_element_t* const e, const float row_top) {
 	if (bar_hides_commands(e)) return e->rect.height * 0.5f;
-	return row_top + ITEM_TOP + ITEM_CIRCLE * 0.5f;
+	return row_top + ITEM_TOP + ELLIPSIS_DOT * 0.5f;
 }
 
 static float bar_row_top(zrn_element_t* e);
@@ -928,10 +954,13 @@ static void bar_paint(zrn_element_t* const e, zrn_painter_t* const p) {
 	const ZColor border = zrn_ctl_border_brush(c, zrn_theme_color(e, ZRN_TC_BACKGROUND));
 	const ZColor fg = zrn_ctl_foreground(c);
 	const float cx = e->rect.width - ELLIPSIS_WIDTH * 0.5f, cy = ellipsis_y(e, bar_row_top(e));
-	zrn_fill_rect(p, r, bar_background(e));
-	/* AppBarBorderThemeBrush, 1.5 px, on the edge toward the content */
-	if (BAR(e)->b_on_top) zrn_fill_rect(p, zrn_rect(0, r.height - BAR_BORDER, r.width, BAR_BORDER), border);
-	else zrn_fill_rect(p, zrn_rect(0, 0, r.width, BAR_BORDER), border);
+	/* with a backdrop effect (zrn-frosted-diffusion) what is under the bar is its background, with no edge to cut it off */
+	if (!zrn_has_backdrop(e)) {
+		zrn_fill_rect(p, r, bar_background(e));
+		/* AppBarBorderThemeBrush, 1.5 px, on the edge toward the content */
+		if (BAR(e)->b_on_top) zrn_fill_rect(p, zrn_rect(0, r.height - BAR_BORDER, r.width, BAR_BORDER), border);
+		else zrn_fill_rect(p, zrn_rect(0, 0, r.width, BAR_BORDER), border);
+	}
 	for (int i = -1; i <= 1; i++) zrn_fill_ellipse(p, zrn_rect(cx + (float)i * ELLIPSIS_STEP - ELLIPSIS_DOT * 0.5f, cy - ELLIPSIS_DOT * 0.5f, ELLIPSIS_DOT, ELLIPSIS_DOT), fg);
 }
 
@@ -1032,7 +1061,7 @@ void Zapp_bar_set_is_open(Zid app_bar, bool is_open) {
 		else if (e->root->open_bar == e) e->root->open_bar = nullptr;
 	}
 	if (e->root && zrn_animations_enabled(e->root)) {
-		e->b_wants_tick = true;
+		zrn_want_tick(e);
 	} else {
 		b->open_t = goal;
 		e->b_wants_tick = false;
@@ -1040,6 +1069,11 @@ void Zapp_bar_set_is_open(Zid app_bar, bool is_open) {
 	bar_sync_compact(e);
 	zrn_changed_layout(e);
 	zrn_raise(e, is_open ? Z_EVENT_OPENED : Z_EVENT_CLOSED);
+}
+
+float Zapp_bar_get_closed_height(const Zid app_bar) {
+	zrn_element_t* const e = zrn_get(app_bar, Z_CLASS_APP_BAR);
+	return e ? zrn_app_bar_closed_height(e) : 0;
 }
 
 bool Zapp_bar_get_is_open(const Zid id) {
@@ -1191,11 +1225,13 @@ static ZSize command_bar_arrange(zrn_element_t* const e, const ZSize final) {
 	int hidden = bar_hides_commands(e), i;
 	/* what a Minimal bar hides is put below its edge, where the clip of the bar cuts it */
 	float away = final.height + 1;
-	for (i = c->primary_count - 1; i >= 0; i--) {
+	for (i = 0; i < c->primary_count; i++) primary_w += c->primary[i]->desired.width;
+	/* the buttons are centred in the bar (Windows Phone); with content beside them they keep to the right */
+	x = cc->content ? final.width - ELLIPSIS_WIDTH - primary_w : zrn_maxf(0, (final.width - primary_w) * 0.5f);
+	for (i = 0; i < c->primary_count; i++) {
 		zrn_element_t* b = c->primary[i];
-		x -= b->desired.width;
-		primary_w += b->desired.width;
 		zrn_arrange(b, zrn_rect(x, hidden ? away : row_top, b->desired.width, b->desired.height));
+		x += b->desired.width;
 	}
 	if (cc->content) {
 		float room = zrn_maxf(0, final.width - primary_w - ELLIPSIS_WIDTH);

@@ -270,7 +270,18 @@ extern "C" {
 	 */
 	typedef enum ZPageTransition {
 		Z_TRANSITION_NONE = 0,
-		Z_TRANSITION_TURNSTILE
+		Z_TRANSITION_TURNSTILE,
+		/**
+		 * ContinuumTransition: the element given with Zframe_set_continuum_element flies out (translate 0 to 100 x, -50 y, 150 ms,
+		 * ease in, fading) while the other rows turn away; on the new page the element marked with Zpage_set_continuum_element
+		 * drops in (translate y -50 to 0, 250 ms, ease out, fading in) while its other rows swing in. Back is a turnstile.
+		 */
+		Z_TRANSITION_CONTINUUM,
+		/**
+		 * SlideInTransition (up): the old page fades out (100 ms), the new one rises (translate y 150 to 0) and fades in, 350 ms
+		 * emphasized. Going back from it the page slides down and fades (250 ms, ease in) and the one under it fades in (150 ms).
+		 */
+		Z_TRANSITION_SLIDE_UP
 	} ZPageTransition;
 
 	/** @brief A Frame with no page and no history; it shows the first page after Zframe_navigate. The transition is Z_TRANSITION_TURNSTILE at first. */
@@ -366,6 +377,18 @@ extern "C" {
 
 	/** @brief The transition between pages; it runs only while animations are on (Zroot_set_animations). Takes effect from the next navigation. */
 	ZRNUI_API void Zframe_set_transition(Zid frame, ZPageTransition transition);
+	/**
+	 * @brief Frame.Navigate with the transition of this navigation only (the frame's own, Zframe_set_transition, stays for the
+	 * others). Going back from the page it opens runs the same kind of transition backwards. Otherwise as Zframe_navigate.
+	 */
+	ZRNUI_API bool Zframe_navigate_with_transition(Zid frame, ZPageFactory factory, void* parameter, ZPageTransition transition);
+	/**
+	 * @brief The element of the current page that flies out in the next Z_TRANSITION_CONTINUUM navigation (the tapped row). Taken by
+	 * that navigation; Z_INVALID_ID clears it. It is not changed, only moved and faded while the old page leaves.
+	 */
+	ZRNUI_API void Zframe_set_continuum_element(Zid frame, Zid from_element);
+	/** @brief The element of a page that flies in when it is reached by Z_TRANSITION_CONTINUUM (the header that stands for the tapped row). Set it in the page factory. */
+	ZRNUI_API void Zpage_set_continuum_element(Zid page, Zid element);
 	/** @brief true while a transition runs. A Navigate or GoBack in that time ends it at once. */
 	ZRNUI_API bool Zframe_is_transitioning(Zid frame);
 	/**
@@ -642,11 +665,23 @@ extern "C" {
 	ZRNUI_API void Zscroll_viewer_scroll_to_horizontal_offset(Zid scroll_viewer, double offset);
 	/** @brief The offsets, the size of the content (extent) and of the view (viewport) as of the last layout; 0 for a Zid that is not a ScrollViewer. */
 	ZRNUI_API double Zscroll_viewer_get_vertical_offset(Zid scroll_viewer);
+	/**
+	 * @brief Scroll anchoring: keeps `element` (inside the content) where it is on screen when the content above it changes size
+	 * (older messages loaded, a picture that got its size, a typing indicator): the vertical offset moves by as much as the element
+	 * moved in the content. When the viewport gets shorter or taller (the keyboard), the element keeps its distance to the bottom
+	 * edge. A scroll by the user or the program moves it as usual. Z_INVALID_ID stops it; it stops by itself when the element goes.
+	 */
+	ZRNUI_API void Zscroll_viewer_set_anchor(Zid scroll_viewer, Zid element);
+	/** @return The anchor; Z_INVALID_ID when there is none. */
+	ZRNUI_API Zid Zscroll_viewer_get_anchor(Zid scroll_viewer);
 	ZRNUI_API double Zscroll_viewer_get_horizontal_offset(Zid scroll_viewer);
 	ZRNUI_API double Zscroll_viewer_get_extent_height(Zid scroll_viewer);
 	ZRNUI_API double Zscroll_viewer_get_extent_width(Zid scroll_viewer);
 	ZRNUI_API double Zscroll_viewer_get_viewport_height(Zid scroll_viewer);
 	ZRNUI_API double Zscroll_viewer_get_viewport_width(Zid scroll_viewer);
+	/** The room the viewer leaves before and after its content for elements with a backdrop effect (zrn-frosted-diffusion,
+	 * Zelement_set_frosted_diffusion) laid over its top and bottom ends, in logical pixels; part of the extent. */
+	ZRNUI_API void Zscroll_viewer_get_content_insets(Zid scroll_viewer, float* top, float* bottom);
 	/**
 	 * @brief Raised when the offset moves: a touch drag, each step of the inertia (needs Zroot_tick), the wheel, or the program.
 	 * See ZScrollCallback for what is reported. One handler, NULL removes it.
@@ -1361,21 +1396,22 @@ extern "C" {
 	/* ============================================================================
 	 *  APPBAR, COMMANDBAR, APPBARBUTTON, APPBARTOGGLEBUTTON, APPBARSEPARATOR
 	 *
-	 *  A bar a Page shows over its top or its bottom. Closed it is 57.5 px tall (the 54.5 of
-	 *  AppBarThemeMinHeight and a 1.5 px border and padding), or 35 px as ClosedDisplayMode Minimal
+	 *  A bar a Page shows over its top or its bottom. Closed it is 50.5 px tall (1.5 px border, 47.5 row,
+	 *  1.5 px padding, as measured on a Windows Phone 8.1 phone), or 35 px as ClosedDisplayMode Minimal
 	 *  (the XAML has no number for it: 35 is this library's); the page gives its content what is left.
-	 *  Three dots at the right edge (all of a Minimal bar) open it: a tap, or IsOpen. Open, a bar
+	 *  Three dots in the top right corner, level with the tops of the circles (all of a Minimal bar), open it: a tap, or IsOpen. Open, a bar
 	 *  grows over the page (up for a bottom bar, down for a top bar) in 167 ms, the buttons show
 	 *  their labels and a CommandBar lists its secondary commands as rows of text; a press outside
 	 *  an open bar that is not sticky closes it, and is not given to what is under it; so does Back.
 	 *  A secondary command that is tapped closes the bar. The phone template of CommandBar is only
 	 *  a stub (the shell draws the real bar): the dots, the size of a Minimal bar, the rows of the secondary
 	 *  commands and the separator are this library's own, in the measures of the other 8.1 templates.
-	 *  The Compact bar is 57.5 px, not the 68 of other sources.
+	 *  The Compact bar is 50.5 px (the XAML 57.5 is in view pixels of a wider phone).
 	 *
-	 *  An AppBarButton is a 38.5 px circle with a 2.5 px outline in the foreground, 12 px under the top
-	 *  (11 for a toggle button), the icon in it, and its label under it in 9.5 px type, 80 px wide;
-	 *  IsCompact (a CommandBar sets it while it is closed) hides the label and makes it 48 wide. Pressed it fills
+	 *  An AppBarButton is a 33 px circle with a 2 px outline in the foreground, 8 px under the top
+	 *  (7 for a toggle button), the icon (a Segoe UI Symbol glyph centred on its ink when that font is
+	 *  installed) in it, and its label under it in 9.5 px type, 59 px wide; a CommandBar centres its buttons.
+	 *  IsCompact (a CommandBar sets it while it is closed) hides the label. Pressed it fills
 	 *  with the foreground and the icon takes the background color; a checked AppBarToggleButton looks so too.
 	 *  AppBarButton is a Button: Zbutton_on_click and Zbutton_set_flyout work on it, and the AppBarToggleButton
 	 *  is a ToggleButton (Ztoggle_button_*). The Icon is the Content of the button.
@@ -1388,6 +1424,9 @@ extern "C" {
 	 */
 	ZRNUI_API void Zapp_bar_set_is_open(Zid app_bar, bool is_open);
 	ZRNUI_API bool Zapp_bar_get_is_open(Zid app_bar);
+	/** The height of the bar closed, in logical pixels: the room a page gives it (none when it has a backdrop effect, and then
+	 * content that must stay clear of it, a composer above it, keeps this much room itself). */
+	ZRNUI_API float Zapp_bar_get_closed_height(Zid app_bar);
 	/** @brief IsSticky (default false): true keeps an open bar open through a press outside it (light dismiss) and Back. */
 	ZRNUI_API void Zapp_bar_set_is_sticky(Zid app_bar, bool is_sticky);
 	ZRNUI_API bool Zapp_bar_get_is_sticky(Zid app_bar);

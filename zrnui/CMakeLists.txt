@@ -44,6 +44,7 @@ set(ZRNUI_SOURCES
 	src/render/software.c
 	src/render/gles.c
 	src/host.c
+	src/swipe.c
 	src/controls/panels.c
 	src/controls/basic.c
 	src/controls/buttons.c

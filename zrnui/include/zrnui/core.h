@@ -553,7 +553,9 @@ typedef enum ZFontFamily {
 	Z_FONT_LIGHT,
 	Z_FONT_SEMILIGHT,
 	Z_FONT_SEMIBOLD,
-	Z_FONT_BOLD
+	Z_FONT_BOLD,
+	/** Segoe UI Symbol, the icon font of Windows Phone (FontIcon glyphs by codepoint); the regular face where it is missing. */
+	Z_FONT_SYMBOL
 } ZFontFamily;
 
 /** The base theme of a root (Zroot_set_theme): Dark is white on black, Light is black on white. */

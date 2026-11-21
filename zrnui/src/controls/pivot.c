@@ -34,11 +34,13 @@
 
 /* themeresources.xaml: PivotHeaderItem*, PivotItemMargin, PivotPortraitThemePadding; TextStyleLargeFontSize for the title */
 #define TITLE_FONT ZRN_81_FONT_LARGE
-static constexpr float TITLE_X = 19.0f;
-static constexpr float TITLE_TOP = 38.0f;
+/* PivotPortraitThemePadding (19,38): where the title is; its left is also where the first header's text starts.
+ * Read from the theme resources of the root, so an app can override it (Zroot_set_resource_thickness). */
+#define TITLE_X (pivot_pad(p).left)
+#define TITLE_TOP (pivot_pad(p).top)
 static constexpr float HEADER_MARGIN_LEFT = 16.0f;
 static constexpr float HEADER_MARGIN_TOP = -6.5f;
-static constexpr float HEADER_TEXT_X = 19.0f;
+#define HEADER_TEXT_X (pivot_pad(p).left)
 static constexpr float ITEM_MARGIN_LEFT = 19.0f;
 static constexpr float ITEM_MARGIN_TOP = 22.5f;
 static constexpr float ITEM_MARGIN_RIGHT = 19.0f;
@@ -82,6 +84,12 @@ static zrn_font_t header_font(const zrn_pivot_t* const p) {
 	zrn_res_double(r, Z_RES_PIVOT_HEADER_ITEM_FONT_SIZE, &f.size);
 	zrn_res_int(r, Z_RES_PIVOT_HEADER_ITEM_CHARACTER_SPACING, &f.spacing);
 	return f;
+}
+
+static ZThickness pivot_pad(const zrn_pivot_t* const p) {
+	ZThickness t = Zthickness(19.0f, 38.0f, 0, 0);
+	zrn_res_thickness(((const zrn_element_t*)p)->root, Z_RES_PIVOT_PORTRAIT_THEME_PADDING, &t);
+	return t;
 }
 
 static zrn_font_t title_font(void) {
@@ -200,7 +208,14 @@ static ZSize pivot_arrange(zrn_element_t* const e, const ZSize final) {
 		zrn_element_t* const it = p->items[i];
 		const float d = wrap_distance((float)i - p->offset, n);
 		/* a page is in view while the strip is less than a page away from it */
+		const ZVisibility was = it->visibility;
 		it->visibility = fabsf(d) < 1.0f ? Z_VISIBLE : Z_COLLAPSED;
+		if (was == Z_COLLAPSED && it->visibility == Z_VISIBLE) {
+			/* it was measured collapsed (nothing below it measured): what changed in it while it was away (rows added to
+			 * a list on a page not shown) is measured now, before it is arranged */
+			it->b_measure_valid = false;
+			zrn_measure(it, it->last_available.width > 0 ? it->last_available : zrn_size(final.width, zrn_maxf(0, final.height - top)));
+		}
 		it->b_hit_visible = fabsf(d) < 0.5f || (n == 1);
 		zrn_arrange(it, zrn_rect(d * final.width, top, final.width, zrn_maxf(0, final.height - top)));
 	}
@@ -257,7 +272,7 @@ static void pivot_go(zrn_pivot_t* p, const float to, const bool b_animate) {
 	}
 	if (b_animate && e->root && zrn_animations_enabled(e->root) && p->offset != p->to) {
 		p->b_sliding = true;
-		e->b_wants_tick = true;
+		zrn_want_tick(e);
 	} else {
 		p->b_sliding = false;
 		p->offset = (float)index;
@@ -320,7 +335,7 @@ static void pivot_begin_drag(zrn_pivot_t* const p) {
 	p->b_dragging = true;
 	p->b_sliding = false;
 	if (e->root) zrn_set_capture(e->root, e);
-	e->b_wants_tick = true;
+	zrn_want_tick(e);
 }
 
 static int pivot_input(zrn_element_t* const e, zrn_input_t* const in) {

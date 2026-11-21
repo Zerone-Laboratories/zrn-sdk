@@ -26,7 +26,7 @@ Controls are created with `Z...` factories and attached to a parent element. See
 
 At `Zinit` the font directory (`ZConfig.font_directory` or `$ZRNUI_FONT_DIR`, then `Zset_font_directory`, then the compiled-in
 one) and all system fonts (fontconfig, optional) are registered. The five faces are resolved from that registry in this order:
-1. Exact Segoe files in the font directory.
+1. Exact Segoe files in the font directory (Segoe WP files of the phone first, names matched without case).
 2. System Segoe ("Segoe WP", then "Segoe UI"), nearest weight.
 3. Stand-in files in the font directory (Segoe Regular/Bold, then the bundled Selawik).
 

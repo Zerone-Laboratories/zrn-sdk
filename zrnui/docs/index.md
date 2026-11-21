@@ -11,6 +11,7 @@ zrnSDK builds applications in the style of Windows Phone 8.1 in C23. How to buil
 | [Theme, fonts, configuration](theme-and-resources.md) | dark/light theme, accents, `theme.ini`, theme resources, fonts, renderer and animations, `ZConfig` |
 | [Embedding without zrnapp](embedding.md) | the loop of a platform layer: input in, frames out, OpenGL ES 2 target |
 | [Building for a phone](devices.md) | cross build, upload and run on a phone with `tools/zrn`, login options, ssh keys |
+| [Publishing to the store](../../docs/publishing.md) | `zrnapp.toml`, the store build, submitting, updates, what users see |
 
 ## Widgets
 
@@ -26,7 +27,7 @@ zrnSDK builds applications in the style of Windows Phone 8.1 in C23. How to buil
 | [Items and selectors](items.md) | ItemsControl, Selector, ListBox, ListView, GridView, ComboBox, FlipView, LoopingSelector, SemanticZoom |
 | [Date and time pickers](pickers.md) | DatePicker, TimePicker, DatePickerFlyout, TimePickerFlyout |
 | [Flyouts and dialogs](flyouts-and-dialogs.md) | Flyout, MenuFlyout, ContentDialog, ToolTip |
-| [App bars and icons](app-bars-and-icons.md) | AppBar, CommandBar, AppBarButton, AppBarToggleButton, AppBarSeparator, SymbolIcon, FontIcon, PathIcon, BitmapIcon |
+| [App bars and icons](app-bars-and-icons.md) | AppBar, CommandBar, AppBarButton, AppBarToggleButton, AppBarSeparator, SymbolIcon, FontIcon, PathIcon, BitmapIcon, zrn-frosted-diffusion |
 
 ## Reference
 

@@ -279,6 +279,38 @@ Which directory is used: the `font_directory` of `ZConfig` (`Zinit_ex`), or
 Otherwise the directory given to `Zset_font_directory`, otherwise the directory
 compiled in. `Zinit` returns false when no font for the regular face is found.
 
+### Using Segoe WP
+
+The SDK draws in Segoe WP, the font of Windows Phone 8.1, when it can find it.
+Segoe WP and Segoe UI are licensed by Microsoft: they are not in the SDK and must
+not be put in an app's package or in a repository. Selawik stays the free fallback.
+
+Give zrnui the files in one of two ways:
+
+1. **Font directory.** Point the SDK at a folder that holds the Segoe WP files of
+   a Windows Phone 8.1 firmware (`SegoeWP.ttf`, `SegoeWP-Light.ttf`,
+   `SegoeWP-Semilight.ttf`, `SegoeWP-Semibold.ttf`, `SegoeWP-Bold.ttf`), or the
+   Windows Segoe UI files (`segoeui.ttf`, `segoeuil.ttf`, `segoeuisl.ttf`,
+   `seguisb.ttf`, `segoeuib.ttf`). Names are matched without case, so
+   `SEGOEUI.TTF` works. Each weight is taken from its own file.
+
+   ```sh
+   ZRNUI_FONT_DIR=$HOME/fonts/segoe-wp ./my-app
+   ```
+
+   or `Zset_font_directory("/path/to/segoe-wp")` before `Zinit`. The directory
+   replaces the bundled one, so put every weight there.
+
+2. **System install.** Copy the files to `~/.local/share/fonts/` (one user) or
+   `/usr/share/fonts/segoe-wp/` (ztOS, all apps) and run `fc-cache -f`. zrnui asks
+   fontconfig for the family "Segoe WP", then "Segoe UI", at the nearest weight,
+   and keeps the bundled Selawik for any weight it does not find.
+
+To see which file each face loaded, set `ZRNUI_FONT_LOG=1`: zrnui prints
+`fonts: face <n> -> <path>` to stderr at `Zinit` (faces 0-5: regular, light,
+semilight, semibold, bold, symbol). App bar and symbol icons use Segoe UI Symbol
+(`seguisym.ttf`) when it is installed, and drawn shapes otherwise.
+
 Control fonts: `Zcontrol_set_font_size`, `Zcontrol_get_font_size` and
 `Zcontrol_set_font_family` set the font of a control; a TextBlock inside takes
 them when it has none of its own.

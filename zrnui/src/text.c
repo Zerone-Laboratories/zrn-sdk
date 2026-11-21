@@ -12,10 +12,15 @@
 #include "zrnui/internal/util.h"
 #include "zrnui/internal/font.h"
 #include "zrnui/internal/render/painter.h"
+#include "zrnui/internal/image.h"
+#include "zrnui/platform.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
+
+extern ZRenderStats zrn_render_stats;
 
 /* ============================================================================
  *  caches
@@ -33,6 +38,8 @@ typedef struct glyph_entry {
 	bool b_has_bitmap;
 	int width, height, left, top;
 	uint8_t* alpha;
+	/** A colour glyph (an emoji): its RGBA, scaled from the strike of the font to the device size; NULL for an ordinary glyph. */
+	zrn_image_t* color;
 } glyph_entry_t;
 
 static glyph_entry_t* g_glyphs;
@@ -44,7 +51,11 @@ static constexpr int ZRN_GLYPH_LIMIT = 8192;
 /* Empties the glyph cache: every bitmap is freed and the table is reset, so no entry is half-reset. */
 static void glyph_flush(void) {
 	if (!g_glyphs) return;
-	for (size_t i = 0; i < g_glyph_cap; i++) if (g_glyphs[i].b_used) free(g_glyphs[i].alpha);
+	for (size_t i = 0; i < g_glyph_cap; i++) {
+		if (!g_glyphs[i].b_used) continue;
+		free(g_glyphs[i].alpha);
+		zrn_image_free(g_glyphs[i].color);
+	}
 	memset(g_glyphs, 0, g_glyph_cap * sizeof *g_glyphs);
 	g_glyph_count = 0;
 }
@@ -106,7 +117,7 @@ static glyph_entry_t* glyph_slot(const uint32_t cp, const int32_t face_size, con
 bool zrn_text_init(void) { return zrn_fonts_init(); }
 
 void zrn_text_shutdown(void) {
-	for (size_t i = 0; i < g_glyph_cap; i++) if (g_glyphs[i].b_used) free(g_glyphs[i].alpha);
+	glyph_flush();
 	free(g_glyphs);
 	g_glyphs = nullptr;
 	g_glyph_cap = g_glyph_count = 0;
@@ -141,7 +152,13 @@ static float advance_em(const uint8_t face, const uint32_t cp) {
 	if (!g) return 0.0001f;
 	if (g->advance == 0.0f) {
 		FT_Face const ft = face_of(face, cp);
-		if (ft) {
+		if (ft && zrn_face_is_color(ft)) {
+			/* a bitmap font has only its strike: the advance of the strike over its size in pixels */
+			const FT_UInt index = FT_Get_Char_Index(ft, cp);
+			if (FT_Select_Size(ft, 0) == 0 && FT_Load_Glyph(ft, index, FT_LOAD_COLOR) == 0 && ft->size->metrics.y_ppem > 0) {
+				g->advance = (float)ft->glyph->advance.x / 64.0f / (float)ft->size->metrics.y_ppem;
+			}
+		} else if (ft) {
 			const FT_UInt index = FT_Get_Char_Index(ft, cp);
 			FT_Set_Char_Size(ft, 0, 1000 * 64, 72, 72);
 			if (FT_Load_Glyph(ft, index, FT_LOAD_NO_HINTING | FT_LOAD_NO_BITMAP) == 0) g->advance = (float)ft->glyph->linearHoriAdvance / 65536.0f / 1000.0f;
@@ -163,14 +180,65 @@ float zrn_font_ascent(const zrn_font_t font) {
 	return font.size * (float)ft->ascender / (float)ft->units_per_EM;
 }
 
+/*
+ * A colour glyph: the BGRA bitmap of the strike (premultiplied), scaled to the device size by the mean of what falls in each pixel,
+ * and made a straight RGBA image, as the painters draw images. The size of an emoji follows the text: an em of the strike is an em.
+ */
+static void glyph_color(glyph_entry_t* const g, FT_Face const ft, const uint32_t cp, const float device_size) {
+	const FT_UInt index = FT_Get_Char_Index(ft, cp);
+	if (FT_Select_Size(ft, 0) != 0 || FT_Load_Glyph(ft, index, FT_LOAD_COLOR) != 0) return;
+	const FT_Bitmap* const bm = &ft->glyph->bitmap;
+	if (bm->pixel_mode != FT_PIXEL_MODE_BGRA || bm->width == 0 || bm->rows == 0 || ft->size->metrics.y_ppem == 0) return;
+	const float k = device_size / (float)ft->size->metrics.y_ppem;
+	const int sw = (int)bm->width, sh = (int)bm->rows;
+	const int w = (int)zrn_maxf(1, ceilf((float)sw * k)), h = (int)zrn_maxf(1, ceilf((float)sh * k));
+	uint8_t* const out = (uint8_t*)malloc((size_t)w * (size_t)h * 4);
+	if (!out) return;
+	for (int oy = 0; oy < h; oy++) {
+		const int y0 = oy * sh / h;
+		const int y1 = (oy + 1) * sh / h > y0 ? (oy + 1) * sh / h : y0 + 1;
+		for (int ox = 0; ox < w; ox++) {
+			const int x0 = ox * sw / w;
+			const int x1 = (ox + 1) * sw / w > x0 ? (ox + 1) * sw / w : x0 + 1;
+			uint32_t sum[4] = { 0, 0, 0, 0 };
+			uint32_t n = 0;
+			for (int sy = y0; sy < y1 && sy < sh; sy++) {
+				const uint8_t* px = bm->buffer + (size_t)sy * (size_t)bm->pitch + (size_t)x0 * 4;
+				for (int sx = x0; sx < x1 && sx < sw; sx++, px += 4, n++) {
+					sum[0] += px[2];
+					sum[1] += px[1];
+					sum[2] += px[0];
+					sum[3] += px[3];
+				}
+			}
+			uint8_t* const o = out + ((size_t)oy * (size_t)w + (size_t)ox) * 4;
+			const uint32_t a = n ? sum[3] / n : 0;
+			/* premultiplied to straight */
+			for (int i = 0; i < 3; i++) o[i] = a ? (uint8_t)zrn_minf(255.0f, (float)(sum[i] / n) * 255.0f / (float)a) : 0;
+			o[3] = (uint8_t)a;
+		}
+	}
+	g->color = zrn_image_from_rgba(w, h, out);
+	free(out);
+	if (!g->color) return;
+	g->width = w;
+	g->height = h;
+	g->left = (int)lroundf((float)ft->glyph->bitmap_left * k);
+	g->top = (int)lroundf((float)ft->glyph->bitmap_top * k);
+}
+
 static glyph_entry_t* glyph_bitmap(const uint8_t face, const float device_size, const uint32_t cp) {
 	const int32_t size_key = (int32_t)(device_size * 8.0f + 0.5f);
 	const int32_t key = (size_key << 3) | (face + 1) | 0x40000000;
 	glyph_entry_t* const g = glyph_slot(cp, key, 1);
 	if (!g->b_has_bitmap) {
+		struct timespec t0, t1;
+		clock_gettime(CLOCK_MONOTONIC, &t0);
 		FT_Face const ft = face_of(face, cp);
 		g->b_has_bitmap = true;
-		if (ft) {
+		if (ft && zrn_face_is_color(ft)) {
+			glyph_color(g, ft, cp, device_size);
+		} else if (ft) {
 			const FT_UInt index = FT_Get_Char_Index(ft, cp);
 			FT_Set_Char_Size(ft, 0, (device_size * 64.0f + 0.5f), 72, 72);
 			if (FT_Load_Glyph(ft, index, FT_LOAD_NO_HINTING | FT_LOAD_RENDER) == 0 && ft->glyph->bitmap.pixel_mode == FT_PIXEL_MODE_GRAY) {
@@ -190,6 +258,8 @@ static glyph_entry_t* glyph_bitmap(const uint8_t face, const float device_size, 
 				}
 			}
 		}
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		zrn_render_stats.raster_ms += (float)((double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6);
 	}
 	return g;
 }
@@ -246,6 +316,7 @@ int zrn_utf8_prev(const char* s, int index) {
  * ============================================================================ */
 
 static float char_advance(const zrn_font_t font, const uint32_t cp) {
+	if (zrn_is_emoji_joiner(cp)) return 0;
 	return advance_em(zrn_face_index(font.family), cp) * font.size + (float)font.spacing * 0.001f * font.size;
 }
 
@@ -365,9 +436,18 @@ void zrn_draw_string(zrn_painter_t* const p, const zrn_font_t font, const char* 
 		if (!used) used = 1;
 		i += used;
 		if (cp == '\n' || cp == '\r') continue;
+		if (zrn_is_emoji_joiner(cp)) continue;
 		if (cp != ' ' && cp != '\t') {
 			const glyph_entry_t* const g = glyph_bitmap(face, device_size, cp);
-			if (g->alpha) zrn_blit_alpha(p, (int)floorf(pen + 0.5f) + g->left, (int)floorf(baseline + 0.5f) - g->top, g->width, g->height, g->alpha, g->width, c);
+			if (g->color) {
+				/* drawn as an image, in its own colors: only the opacity of the text applies */
+				const float gx = floorf(pen + 0.5f) + (float)g->left, gy = floorf(baseline + 0.5f) - (float)g->top;
+				const ZRect dest = zrn_rect((gx - p->tx) / p->scale, (gy - p->ty) / p->scale, (float)g->width / p->scale, (float)g->height / p->scale);
+				const float alpha = p->alpha;
+				p->alpha *= c.a;
+				zrn_draw_image(p, g->color, dest, zrn_rect(0, 0, (float)g->width, (float)g->height));
+				p->alpha = alpha;
+			} else if (g->alpha) zrn_blit_alpha(p, (int)floorf(pen + 0.5f) + g->left, (int)floorf(baseline + 0.5f) - g->top, g->width, g->height, g->alpha, g->width, c);
 		}
 		pen += char_advance(font, cp) * p->scale;
 	}

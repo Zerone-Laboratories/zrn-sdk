@@ -103,9 +103,10 @@ static void test_safe_area(void) {
 	Zroot_update_layout(g_root);
 	page = Zframe_get_page(g_frame);
 	r = Zelement_get_bounds(page);
-	/* the page starts under the status bar of 32 (ZRN_SAFE_AREA_TOP), the frame itself fills the screen */
-	CHECK_NEAR(r.y, 32);
-	CHECK_NEAR(r.height, 768);
+	/* no safe area by default: the ztOS shell already places the window under its status bar, so the page fills the
+	 * frame (a host whose window reaches under a status bar sets ZRNUI_SAFE_AREA_TOP, see frame.c) */
+	CHECK_NEAR(r.y, 0);
+	CHECK_NEAR(r.height, 800);
 	r = Zelement_get_bounds(g_frame);
 	CHECK_NEAR(r.y, 0);
 	CHECK_NEAR(r.height, 800);

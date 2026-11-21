@@ -10,15 +10,27 @@
 #include "zrnui/internal/root.h"
 #include "zrnui/internal/controls/control.h"
 #include "zrnui/internal/controls/appbar.h"
+#include "zrnui/internal/controls/panels.h"
 
+#include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 /**
- * The safe area: what the status bar of the shell covers at the top of the screen, in logical
- * pixels, where the first element of a page starts (the 32 px of the status bar of the shell). A constant
- * for now; it is going to come from the shell, and change while the app runs.
+ * The safe area: what the status bar of the shell covers at the top of the window, in logical
+ * pixels, where the first element of a page starts. The ztOS shell (ztmetro) already places an app's
+ * window under its own status bar, so a page starts at the window's top: 0. A host whose window
+ * reaches under a status bar sets ZRNUI_SAFE_AREA_TOP (for example 32, the bar of Windows Phone).
  */
-static constexpr float ZRN_SAFE_AREA_TOP = 32.0f;
+static float zrn_safe_area_top(void) {
+	static float top = -1.0f;
+	if (top < 0) {
+		const char* const s = getenv("ZRNUI_SAFE_AREA_TOP");
+		top = s && *s ? (float)atof(s) : 0.0f;
+		if (!(top >= 0 && top < 200)) top = 0;
+	}
+	return top;
+}
 
 /** A page a Frame shows (frame.c): the navigation parameter it was created for. */
 typedef struct zrn_page {
@@ -32,6 +44,8 @@ typedef struct zrn_page {
 	zrn_element_t* bottom_bar;
 	/** The index in the history of the entry the page was built for. */
 	int entry_index;
+	/** Zpage_set_continuum_element: what flies in when the page is reached by a continuum transition. */
+	Zid continuum;
 } zrn_page_t;
 
 typedef struct zrn_frame_entry {
@@ -39,6 +53,8 @@ typedef struct zrn_frame_entry {
 	void* parameter;
 	/** The page of the entry, alive and out of the frame, when its NavigationCacheMode keeps it. */
 	Zid cached;
+	/** The transition that brought the entry: going back from it runs the same kind backwards. */
+	ZPageTransition transition;
 } zrn_frame_entry_t;
 
 /** A Frame: the navigation history, `current` is the entry shown. */
@@ -59,10 +75,21 @@ typedef struct zrn_frame {
 	/** The new page, built but not yet in the frame, during phase 1. */
 	Zid pending;
 	void* pending_parameter;
-	/** The rows being turned, and the opacity each had. */
+	/** The rows being turned, the opacity each had, the top of each in the root (collect) and then its place in the stagger. */
 	Zid* rows;
 	float* row_opacity;
+	float* row_top;
+	int* row_order;
 	int row_count, row_cap;
+	/** The transition of the navigation that runs (the frame's own, or the one of Zframe_navigate_with_transition). */
+	ZPageTransition active;
+	/** Zframe_set_continuum_element, for the next continuum navigation. */
+	Zid continuum_from;
+	/** The element that flies (out in phase 1, in in phase 2) and its opacity before; the page that slides, and its opacity before. */
+	Zid fly;
+	float fly_opacity;
+	Zid slide;
+	float slide_opacity;
 } zrn_frame_t;
 
 #define PAGE(e) ZRN_AS(zrn_page_t, e)
@@ -84,8 +111,9 @@ static void page_init(zrn_element_t* const e) {
 
 /* The page makes room for its app bars: what is left is the content's, and an open bar grows over the content. */
 static void page_bar_room(const zrn_page_t* const p, float* const top, float* const bottom) {
-	*top = p->top_bar && p->top_bar->visibility == Z_VISIBLE ? zrn_app_bar_closed_height(p->top_bar) : 0;
-	*bottom = p->bottom_bar && p->bottom_bar->visibility == Z_VISIBLE ? zrn_app_bar_closed_height(p->bottom_bar) : 0;
+	/* a bar with a backdrop effect (zrn-frosted-diffusion) takes no room: the content goes on under it */
+	*top = p->top_bar && p->top_bar->visibility == Z_VISIBLE && !zrn_has_backdrop(p->top_bar) ? zrn_app_bar_closed_height(p->top_bar) : 0;
+	*bottom = p->bottom_bar && p->bottom_bar->visibility == Z_VISIBLE && !zrn_has_backdrop(p->bottom_bar) ? zrn_app_bar_closed_height(p->bottom_bar) : 0;
 }
 
 static ZSize page_measure(zrn_element_t* const e, const ZSize available) {
@@ -205,13 +233,14 @@ static constexpr float OUT_MS = 128.0f;
 static constexpr float IN_MS = 180.0f;
 static constexpr float STAGGER = 28.0f;
 static constexpr float GAP_AT = 330.0f;
-static constexpr int MAX_ROWS = 64;
+static constexpr int MAX_ROWS = 160;
 static constexpr int MAX_STAGGER_ROWS = 7;
 
 static void frame_init(zrn_element_t* const e) {
 	e->b_focusable = false;
 	FRAME(e)->current = -1;
 	FRAME(e)->transition = Z_TRANSITION_TURNSTILE;
+	FRAME(e)->active = Z_TRANSITION_TURNSTILE;
 	FRAME(e)->mode = Z_NAVIGATION_NEW;
 	ZRN_AS(zrn_control_t, e)->h_content = Z_HALIGN_STRETCH;
 	ZRN_AS(zrn_control_t, e)->v_content = Z_VALIGN_STRETCH;
@@ -234,9 +263,13 @@ static void frame_destroy(zrn_element_t* const e) {
 	free(f->entries);
 	free(f->rows);
 	free(f->row_opacity);
+	free(f->row_top);
+	free(f->row_order);
 	f->entries = nullptr;
 	f->rows = nullptr;
 	f->row_opacity = nullptr;
+	f->row_top = nullptr;
+	f->row_order = nullptr;
 }
 
 static void frame_tick(zrn_element_t* e, float dt);
@@ -244,7 +277,7 @@ static void frame_tick(zrn_element_t* e, float dt);
 /* The page starts under the status bar: the safe area is room the frame keeps, which is also where a turnstile turns. */
 static ZThickness frame_chrome(zrn_element_t* const e) {
 	ZRN_UNUSED(e);
-	return Zthickness(0, ZRN_SAFE_AREA_TOP, 0, 0);
+	return Zthickness(0, zrn_safe_area_top(), 0, 0);
 }
 
 zrn_class_t zrn_class_frame = {
@@ -265,32 +298,106 @@ static bool is_container(const zrn_element_t* const e) {
 		zrn_is_a(e, Z_CLASS_SCROLL_VIEWER) || zrn_is_a(e, Z_CLASS_USER_CONTROL) || zrn_is_a(e, Z_CLASS_ITEMS_CONTROL);
 }
 
-static void collect_rows(zrn_frame_t* const f, const zrn_element_t* const e) {
-	int i;
+/* A container that turns whole, as a row: a bitmap cache (it is drawn as one picture anyway), or a box that paints a
+ * background of its own (a bubble, a tile) and is no taller than a third of the frame. Its text turning without the box
+ * behind it was the glitch of a turnstile over such rows. */
+static bool is_unit(const zrn_frame_t* const f, const zrn_element_t* const e) {
+	if (e->cache_mode == Z_CACHE_BITMAP) return true;
+	bool b_paints = false;
+	if (zrn_is_a(e, Z_CLASS_BORDER)) {
+		const zrn_border_t* const b = ZRN_AS(zrn_border_t, e);
+		b_paints = (b->b_has_background && b->background.a > 0) || b->b_has_border_brush;
+	} else if (zrn_is_a(e, Z_CLASS_PANEL)) {
+		const zrn_panel_t* const pn = ZRN_AS(zrn_panel_t, e);
+		b_paints = pn->b_has_background && pn->background.a > 0;
+	}
+	return b_paints && e->rect.height * 3.0f <= f->base.base.base.rect.height;
+}
+
+static bool rows_room(zrn_frame_t* const f) {
+	if (f->row_count < f->row_cap) return true;
+	const int cap = f->row_cap ? f->row_cap * 2 : 16;
+	Zid* const rows = realloc(f->rows, (size_t)cap * sizeof *rows);
+	if (!rows) return false;
+	f->rows = rows;
+	float* const ops = realloc(f->row_opacity, (size_t)cap * sizeof *ops);
+	if (!ops) return false;
+	f->row_opacity = ops;
+	float* const tops = realloc(f->row_top, (size_t)cap * sizeof *tops);
+	if (!tops) return false;
+	f->row_top = tops;
+	int* const orders = realloc(f->row_order, (size_t)cap * sizeof *orders);
+	if (!orders) return false;
+	f->row_order = orders;
+	f->row_cap = cap;
+	return true;
+}
+
+/* The rows of a page that are in view: what is outside the frame, or clipped away by a scroll viewer (the rest of a long
+ * list, the pivot items aside), does not turn and does not take a place in the stagger. `x` `y` is the origin of `e`'s
+ * parent in the root, `view` what is visible there (root coordinates). */
+static void collect_rows(zrn_frame_t* const f, const zrn_element_t* const e, const float x, const float y, ZRect view) {
 	if (e->visibility != Z_VISIBLE || f->row_count >= MAX_ROWS || zrn_is_a(e, Z_CLASS_APP_BAR)) return;
-	if (is_container(e) && e->child_count > 0) {
-		for (i = 0; i < e->child_count; i++) collect_rows(f, e->children[i]);
+	/* what flies on its own does not turn */
+	if (f->fly != Z_INVALID_ID && e->id == f->fly) return;
+	const float ex = x + e->rect.x, ey = y + e->rect.y;
+	const bool b_overflows = e->child_count > 0 && !e->b_clip_to_bounds;
+	/* a zero-sized holder (a Canvas) may have children that overflow it: only a clipped or childless element is judged by its own box */
+	if (!b_overflows && (ex >= view.x + view.width || ey >= view.y + view.height || ex + e->rect.width <= view.x || ey + e->rect.height <= view.y)) return;
+	if (is_container(e) && e->child_count > 0 && !is_unit(f, e)) {
+		if (e->b_clip_to_bounds) {
+			const float x0 = zrn_maxf(view.x, ex), y0 = zrn_maxf(view.y, ey);
+			const float x1 = zrn_minf(view.x + view.width, ex + e->rect.width), y1 = zrn_minf(view.y + view.height, ey + e->rect.height);
+			if (x1 <= x0 || y1 <= y0) return;
+			view = zrn_rect(x0, y0, x1 - x0, y1 - y0);
+		}
+		for (int i = 0; i < e->child_count; i++) collect_rows(f, e->children[i], ex, ey, view);
 		return;
 	}
-	if (f->row_count == f->row_cap) {
-		const int cap = f->row_cap ? f->row_cap * 2 : 16;
-		Zid* rows = realloc(f->rows, (size_t)cap * sizeof *rows);
-		float* ops;
-		if (!rows) return;
-		f->rows = rows;
-		ops = (float*)realloc(f->row_opacity, (size_t)cap * sizeof *ops);
-		if (!ops) return;
-		f->row_opacity = ops;
-		f->row_cap = cap;
-	}
+	if (!rows_room(f)) return;
 	f->rows[f->row_count] = e->id;
 	f->row_opacity[f->row_count] = e->opacity;
+	f->row_top[f->row_count] = ey;
 	f->row_count++;
+}
+
+/* The place of each row in the stagger: by its top on the screen, the rows that start on the same line together, as the
+ * Lumia turns a page from the top down whatever order the tree has them in. */
+static void rows_order(const zrn_frame_t* const f) {
+	for (int i = 0; i < f->row_count; i++) {
+		int above = 0;
+		for (int j = 0; j < f->row_count; j++) {
+			/* the distinct lines above this one: a row counts once, with the first of the rows of its line */
+			if (f->row_top[j] >= f->row_top[i] - 4.0f) continue;
+			bool b_first = true;
+			for (int k = 0; k < j && b_first; k++) {
+				if (fabsf(f->row_top[k] - f->row_top[j]) < 4.0f) b_first = false;
+			}
+			if (b_first) above++;
+		}
+		f->row_order[i] = above;
+	}
+}
+
+static bool frame_log(void) {
+	static int b_log = -1;
+	if (b_log < 0) b_log = getenv("ZRNUI_FRAME_LOG") != nullptr;
+	return b_log;
 }
 
 static void rows_of(zrn_frame_t* const f, zrn_element_t* const page) {
 	f->row_count = 0;
-	if (page) collect_rows(f, page);
+	if (!page) return;
+	const zrn_element_t* const frame = &f->base.base.base;
+	const ZPoint origin = zrn_to_root(frame, (ZPoint){ .x = 0, .y = 0 });
+	const ZPoint parent = page->parent ? zrn_to_root(page->parent, (ZPoint){ .x = 0, .y = 0 }) : origin;
+	collect_rows(f, page, parent.x, parent.y, zrn_rect(origin.x, origin.y, frame->rect.width, frame->rect.height));
+	rows_order(f);
+	if (frame_log()) {
+		int lines = 0;
+		for (int i = 0; i < f->row_count; i++) if (f->row_order[i] + 1 > lines) lines = f->row_order[i] + 1;
+		fprintf(stderr, "zrnui-turnstile rows=%d lines=%d\n", f->row_count, lines);
+	}
 }
 
 /* The rows back as they were. */
@@ -302,7 +409,8 @@ static void rows_reset(zrn_frame_t* const f) {
 		row->proj_cx = row->proj_cy = 0.5f;
 		row->opacity = f->row_opacity[i];
 		zrn_update_transformed(row);
-		zrn_changed_paint(row);
+		/* a render property: the row's own bitmap cache stays as it is, only what holds it is drawn again */
+		zrn_changed_render(row);
 	}
 	f->row_count = 0;
 }
@@ -311,11 +419,12 @@ static float clamp01(const float v) { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
 /* One frame of the turnstile: row `i` of `n`, `t` ms into this half. */
 static void rows_turn(const zrn_frame_t* const f, const zrn_element_t* const frame, const float t, const bool b_incoming) {
-	int i, n = f->row_count;
+	int i, n = f->row_count, lines = 0;
 	const float left = zrn_to_root(frame, (ZPoint){ .x = 0, .y = 0 }).x;
+	for (i = 0; i < n; i++) if (f->row_order[i] + 1 > lines) lines = f->row_order[i] + 1;
 	for (i = 0; i < n; i++) {
 		zrn_element_t* const row = zrn_lookup(f->rows[i]);
-		int order = f->direction >= 0 ? i : n - 1 - i;
+		int order = f->direction >= 0 ? f->row_order[i] : lines - 1 - f->row_order[i];
 		float u, angle, alpha;
 		ZPoint origin;
 		if (!row) continue;
@@ -338,8 +447,131 @@ static void rows_turn(const zrn_frame_t* const f, const zrn_element_t* const fra
 		row->rot_y = angle;
 		row->opacity = f->row_opacity[i] * alpha;
 		zrn_update_transformed(row);
-		zrn_changed_paint(row);
+		zrn_changed_render(row);
 	}
+}
+
+/* ---- the continuum and the slide ---- */
+
+static constexpr float FLY_OUT_MS = 150.0f;
+static constexpr float FLY_IN_MS = 250.0f;
+static constexpr float SLIDE_FADE_MS = 100.0f;
+static constexpr float SLIDE_IN_MS = 350.0f;
+static constexpr float SLIDE_BACK_OUT_MS = 250.0f;
+static constexpr float SLIDE_BACK_IN_MS = 150.0f;
+
+static void fly_set(zrn_frame_t* const f, const Zid id) {
+	const zrn_element_t* const e = id != Z_INVALID_ID ? zrn_lookup(id) : nullptr;
+	f->fly = e ? id : Z_INVALID_ID;
+	f->fly_opacity = e ? e->opacity : 1.0f;
+}
+
+static void fly_reset(zrn_frame_t* const f) {
+	zrn_element_t* const e = f->fly != Z_INVALID_ID ? zrn_lookup(f->fly) : nullptr;
+	f->fly = Z_INVALID_ID;
+	if (!e) return;
+	e->translate_x = e->translate_y = 0;
+	e->opacity = f->fly_opacity;
+	zrn_update_transformed(e);
+	zrn_changed_render(e);
+}
+
+/* The continuum: out, 0 to (100, -50) with an ease in and a fade; in, from y -50 with an ease out and a fade in. */
+static void fly_step(const zrn_frame_t* const f, const float t, const bool b_incoming) {
+	zrn_element_t* const e = f->fly != Z_INVALID_ID ? zrn_lookup(f->fly) : nullptr;
+	if (!e) return;
+	if (!b_incoming) {
+		const float u = zrn_ease(Z_EASE_IN, clamp01(t / FLY_OUT_MS));
+		e->translate_x = 100.0f * u;
+		e->translate_y = -50.0f * u;
+		e->opacity = f->fly_opacity * (1 - u);
+	} else {
+		const float u = zrn_ease(Z_EASE_OUT, clamp01(t / FLY_IN_MS));
+		e->translate_x = 0;
+		e->translate_y = -50.0f * (1 - u);
+		e->opacity = f->fly_opacity * clamp01(t / FLY_IN_MS * 2);
+	}
+	zrn_update_transformed(e);
+	zrn_changed_render(e);
+}
+
+static void slide_set(zrn_frame_t* const f, zrn_element_t* const page) {
+	f->slide = page ? page->id : Z_INVALID_ID;
+	f->slide_opacity = page ? page->opacity : 1.0f;
+}
+
+static void slide_reset(zrn_frame_t* const f) {
+	zrn_element_t* const e = f->slide != Z_INVALID_ID ? zrn_lookup(f->slide) : nullptr;
+	f->slide = Z_INVALID_ID;
+	if (!e) return;
+	e->translate_y = 0;
+	e->opacity = f->slide_opacity;
+	zrn_update_transformed(e);
+	zrn_changed_render(e);
+}
+
+/* The slide of a whole page: forward the old one fades and the new one rises; back the old one sinks and fades, the new one fades in. */
+static void slide_step(const zrn_frame_t* const f, const float t, const bool b_incoming) {
+	zrn_element_t* const e = f->slide != Z_INVALID_ID ? zrn_lookup(f->slide) : nullptr;
+	if (!e) return;
+	float y = 0, alpha = 1;
+	if (f->direction >= 0 && !b_incoming) {
+		alpha = 1 - clamp01(t / SLIDE_FADE_MS);
+	} else if (f->direction >= 0) {
+		const float u = zrn_ease(Z_EASE_EMPHASIZED, clamp01(t / SLIDE_IN_MS));
+		y = 150.0f * (1 - u);
+		alpha = clamp01(t / SLIDE_IN_MS * 2);
+	} else if (!b_incoming) {
+		const float u = zrn_ease(Z_EASE_IN, clamp01(t / SLIDE_BACK_OUT_MS));
+		y = 150.0f * u;
+		alpha = 1 - u;
+	} else {
+		alpha = clamp01(t / SLIDE_BACK_IN_MS);
+	}
+	e->translate_y = y;
+	e->opacity = f->slide_opacity * alpha;
+	zrn_update_transformed(e);
+	zrn_changed_render(e);
+}
+
+/* When the old page is gone and how long the new one takes to come in, for the transition that runs. */
+static float gap_at(const zrn_frame_t* const f) {
+	if (f->active != Z_TRANSITION_SLIDE_UP) return GAP_AT;
+	return f->direction >= 0 ? SLIDE_FADE_MS : SLIDE_BACK_OUT_MS;
+}
+
+static float in_ms(const zrn_frame_t* const f) {
+	if (f->active == Z_TRANSITION_SLIDE_UP) return f->direction >= 0 ? SLIDE_IN_MS : SLIDE_BACK_IN_MS;
+	const float rows = IN_MS + (float)MAX_STAGGER_ROWS * STAGGER;
+	return f->active == Z_TRANSITION_CONTINUUM && rows < FLY_IN_MS ? FLY_IN_MS : rows;
+}
+
+/* One frame of the transition that runs. */
+static void step(zrn_frame_t* const f, zrn_element_t* const frame, const float t, const bool b_incoming) {
+	if (f->active == Z_TRANSITION_SLIDE_UP) {
+		slide_step(f, t, b_incoming);
+		return;
+	}
+	rows_turn(f, frame, t, b_incoming);
+	if (f->active == Z_TRANSITION_CONTINUUM) fly_step(f, t, b_incoming);
+}
+
+/* Everything that moved back as it was. */
+static void moved_reset(zrn_frame_t* const f) {
+	rows_reset(f);
+	fly_reset(f);
+	slide_reset(f);
+}
+
+/* What moves when the new page comes in: its rows (and what flies in), or the whole page. */
+static void incoming_of(zrn_frame_t* const f, zrn_element_t* const page) {
+	f->row_count = 0;
+	if (f->active == Z_TRANSITION_SLIDE_UP) {
+		slide_set(f, page);
+		return;
+	}
+	if (f->active == Z_TRANSITION_CONTINUUM && f->direction >= 0 && page && zrn_is_a(page, Z_CLASS_PAGE)) fly_set(f, PAGE(page)->continuum);
+	rows_of(f, page);
 }
 
 /* The page goes into the frame: its parameter, the content, NavigatedTo, Navigated. */
@@ -377,13 +609,13 @@ static void finish(zrn_frame_t* const f, const Zid frame_id) {
 	if (f->phase == 0) return;
 	if (f->phase == 1) {
 		const Zid page = f->pending;
-		rows_reset(f);
+		moved_reset(f);
 		f->pending = Z_INVALID_ID;
 		f->phase = 0;
 		attach(f, frame_id, page, f->pending_parameter);
 		if (!zrn_lookup(frame_id)) return;
 	} else {
-		rows_reset(f);
+		moved_reset(f);
 	}
 	f->phase = 0;
 	f->elapsed = 0;
@@ -396,15 +628,15 @@ static void frame_tick(zrn_element_t* e, const float dt) {
 	f->elapsed += dt;
 	if (e->root && e->root->b_layout_dirty) Zroot_update_layout(e->root->id);
 	if (f->phase == 1) {
-		if (f->elapsed < GAP_AT) {
-			rows_turn(f, e, f->elapsed, 0);
+		if (f->elapsed < gap_at(f)) {
+			step(f, e, f->elapsed, 0);
 			return;
 		}
 		/* the old page is gone, the new one comes in */
 		{
 			const Zid page = f->pending;
-			const float carry = f->elapsed - GAP_AT;
-			rows_reset(f);
+			const float carry = f->elapsed - gap_at(f);
+			moved_reset(f);
 			f->pending = Z_INVALID_ID;
 			f->phase = 2;
 			attach(f, id, page, f->pending_parameter);
@@ -412,19 +644,19 @@ static void frame_tick(zrn_element_t* e, const float dt) {
 			f = FRAME(zrn_lookup(id));
 			e = &f->base.base.base;
 			if (e->root && e->root->b_layout_dirty) Zroot_update_layout(e->root->id);
-			rows_of(f, f->base.content);
+			incoming_of(f, f->base.content);
 			f->elapsed = carry;
-			rows_turn(f, e, f->elapsed, 1);
+			step(f, e, f->elapsed, 1);
 		}
 		return;
 	}
-	if (f->elapsed >= IN_MS + (float)MAX_STAGGER_ROWS * STAGGER) {
-		rows_reset(f);
+	if (f->elapsed >= in_ms(f)) {
+		moved_reset(f);
 		f->phase = 0;
 		e->b_wants_tick = false;
 		return;
 	}
-	rows_turn(f, e, f->elapsed, 1);
+	step(f, e, f->elapsed, 1);
 }
 
 /*
@@ -437,27 +669,38 @@ static void start_intro(zrn_frame_t* const f, const int direction) {
 	zrn_element_t* const fe = &f->base.base.base;
 	f->b_intro_pending = false;
 	if (!f->base.content) return;
-	rows_of(f, f->base.content);
 	f->direction = direction;
+	/* the rows are the ones in view: the page is laid out first */
+	if (fe->root) Zroot_update_layout(fe->root->id);
+	incoming_of(f, f->base.content);
 	f->phase = 2;
 	f->elapsed = 0;
-	fe->b_wants_tick = true;
-	rows_turn(f, fe, 0, 1);
+	zrn_want_tick(fe);
+	step(f, fe, 0, 1);
 }
 
 void zrn_root_start_intro(zrn_root_t* const r) {
 	if (!r || !r->visual || !zrn_is_a(r->visual, Z_CLASS_FRAME)) return;
 	zrn_frame_t* f = FRAME(r->visual);
-	if (f->b_intro_pending && f->phase == 0 && zrn_animations_enabled(r)) start_intro(f, 1);
+	if (f->b_intro_pending && f->phase == 0 && zrn_animations_enabled(r)) {
+		f->active = f->transition == Z_TRANSITION_NONE ? Z_TRANSITION_TURNSTILE : f->transition;
+		start_intro(f, 1);
+	}
 }
 
-static void show(zrn_frame_t* f, const Zid frame_id, const Zid page_id, void* parameter, const int direction, const ZNavigationMode mode) {
+static void show(zrn_frame_t* f, const Zid frame_id, const Zid page_id, void* parameter, const int direction, const ZNavigationMode mode, const ZPageTransition transition) {
 	f->b_intro_pending = false;
 	f->mode = mode;
+	f->active = transition;
+	f->direction = direction;
 	zrn_element_t* old = f->base.content;
 	zrn_element_t* const frame = &f->base.base.base;
-	const bool b_enabled = f->transition != Z_TRANSITION_NONE && frame->root && zrn_animations_enabled(frame->root);
+	const bool b_enabled = transition != Z_TRANSITION_NONE && frame->root && zrn_animations_enabled(frame->root);
+	/* the element that flies out is taken by this navigation, whatever it runs */
+	const Zid from = f->continuum_from;
+	f->continuum_from = Z_INVALID_ID;
 	const bool b_animate = b_enabled && old && zrn_is_a(old, Z_CLASS_PAGE);
+	if (frame_log()) fprintf(stderr, "zrnui-navigate transition=%d direction=%d animate=%d\n", (int)transition, direction, (int)b_animate);
 	f->b_navigating = true;
 	if (old && zrn_is_a(old, Z_CLASS_PAGE)) {
 		/* the page that leaves is told how the next one is reached */
@@ -476,12 +719,23 @@ static void show(zrn_frame_t* f, const Zid frame_id, const Zid page_id, void* pa
 		/* the first page has nothing to turn away from, but it swings in: the app opens as the second half of a turn.
 		 * Before the platform has a surface nobody knows yet whether animations run: Zroot_start_intro starts it then. */
 		f = FRAME(zrn_lookup(frame_id));
-		f->b_intro_pending = b_first && f->transition != Z_TRANSITION_NONE;
+		f->b_intro_pending = b_first && transition != Z_TRANSITION_NONE;
 		if (b_enabled) start_intro(f, direction);
 		return;
 	}
 	old = f->base.content;
-	rows_of(f, old);
+	f->row_count = 0;
+	if (transition == Z_TRANSITION_SLIDE_UP) {
+		slide_set(f, old);
+	} else {
+		/* the element that flies must be on the page that leaves */
+		if (transition == Z_TRANSITION_CONTINUUM && direction >= 0 && from != Z_INVALID_ID && zrn_lookup(from)) {
+			const zrn_element_t* a = zrn_lookup(from);
+			while (a && a != old) a = a->parent;
+			if (a) fly_set(f, from);
+		}
+		rows_of(f, old);
+	}
 	old->b_hit_visible = false;
 	f->pending = page_id;
 	f->pending_parameter = parameter;
@@ -489,8 +743,8 @@ static void show(zrn_frame_t* f, const Zid frame_id, const Zid page_id, void* pa
 	f->phase = 1;
 	f->elapsed = 0;
 	f->b_navigating = false;
-	frame->b_wants_tick = true;
-	rows_turn(f, frame, 0, 0);
+	zrn_want_tick(frame);
+	step(f, frame, 0, 0);
 }
 
 /* Builds the page of an entry; Z_INVALID_ID, and the page destroyed, when it is not a Page. */
@@ -507,9 +761,11 @@ static Zid build(const Zid frame_id, const zrn_frame_entry_t entry) {
 	return page;
 }
 
-bool Zframe_navigate(const Zid frame, const ZPageFactory factory, void* const parameter) {
+static bool navigate(const Zid frame, const ZPageFactory factory, void* const parameter, const bool b_own, const ZPageTransition own) {
 	zrn_frame_t* f = get_frame(frame);
 	zrn_frame_entry_t entry = { .factory = factory, .parameter = parameter, .cached = Z_INVALID_ID };
+	if (!f) return false;
+	entry.transition = b_own ? own : f->transition;
 	Zid page;
 	if (!f) return false;
 	if (!factory) {
@@ -543,8 +799,32 @@ bool Zframe_navigate(const Zid frame, const ZPageFactory factory, void* const pa
 	entry.cached = Z_INVALID_ID;
 	f->entries[f->current] = entry;
 	f->count = f->current + 1;
-	show(f, frame, page, parameter, 1, Z_NAVIGATION_NEW);
+	show(f, frame, page, parameter, 1, Z_NAVIGATION_NEW, entry.transition);
 	return true;
+}
+
+bool Zframe_navigate(const Zid frame, const ZPageFactory factory, void* const parameter) { return navigate(frame, factory, parameter, false, Z_TRANSITION_NONE); }
+
+bool Zframe_navigate_with_transition(const Zid frame, const ZPageFactory factory, void* const parameter, const ZPageTransition transition) {
+	if (transition < Z_TRANSITION_NONE || transition > Z_TRANSITION_SLIDE_UP) {
+		zrn_error(Z_ERROR_INVALID_ARGUMENT, "unknown page transition %d", (int)transition);
+		return false;
+	}
+	return navigate(frame, factory, parameter, true, transition);
+}
+
+void Zframe_set_continuum_element(const Zid frame, const Zid from_element) {
+	zrn_frame_t* const f = get_frame(frame);
+	if (!f) return;
+	if (from_element != Z_INVALID_ID && !zrn_get(from_element, Z_CLASS_ELEMENT)) return;
+	f->continuum_from = from_element;
+}
+
+void Zpage_set_continuum_element(const Zid page, const Zid element) {
+	zrn_element_t* const e = zrn_get(page, Z_CLASS_PAGE);
+	if (!e) return;
+	if (element != Z_INVALID_ID && !zrn_get(element, Z_CLASS_ELEMENT)) return;
+	PAGE(e)->continuum = element;
 }
 
 static bool move(const Zid id, const int step) {
@@ -567,8 +847,11 @@ static bool move(const Zid id, const int step) {
 	}
 	f->b_navigating = false;
 	if (page == Z_INVALID_ID) return false;
+	/* back runs the transition that brought the page that leaves, forward the one of the entry it goes to; a continuum goes back as a turnstile */
+	ZPageTransition transition = step < 0 ? f->entries[f->current].transition : f->entries[target].transition;
+	if (transition == Z_TRANSITION_CONTINUUM && step < 0) transition = Z_TRANSITION_TURNSTILE;
 	f->current = target;
-	show(f, id, page, f->entries[target].parameter, step, step < 0 ? Z_NAVIGATION_BACK : Z_NAVIGATION_FORWARD);
+	show(f, id, page, f->entries[target].parameter, step, step < 0 ? Z_NAVIGATION_BACK : Z_NAVIGATION_FORWARD, transition);
 	return true;
 }
 

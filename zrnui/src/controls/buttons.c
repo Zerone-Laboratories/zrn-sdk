@@ -86,7 +86,7 @@ static int button_input(zrn_element_t* const e, zrn_input_t* const in) {
 			if (b->b_repeat) {
 				b->repeat_timer = 0;
 				b->b_repeating = false;
-				e->b_wants_tick = true;
+				zrn_want_tick(e);
 				button_click(e);
 				return 1;
 			}
@@ -748,7 +748,7 @@ static void ts_set_goal(zrn_toggle_switch_t* const t, const float goal) {
 		t->knob_from = t->knob;
 		t->knob_elapsed = 0;
 		t->b_knob_animating = true;
-		e->b_wants_tick = true;
+		zrn_want_tick(e);
 	}
 	zrn_changed_paint(e);
 }

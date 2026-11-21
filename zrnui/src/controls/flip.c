@@ -80,7 +80,7 @@ static void flip_slide_to(zrn_flip_view_t* const f, const int index, const bool 
 	f->elapsed = 0;
 	if (b_animate && e->root && zrn_animations_enabled(e->root) && f->offset != f->to) {
 		f->b_sliding = true;
-		e->b_wants_tick = true;
+		zrn_want_tick(e);
 	} else {
 		f->b_sliding = false;
 		f->offset = f->to;
@@ -175,7 +175,7 @@ static int flip_input(zrn_element_t* const e, zrn_input_t* const in) {
 				f->b_dragging = true;
 				f->b_sliding = false;
 				zrn_set_capture(e->root, e);
-				e->b_wants_tick = true;
+				zrn_want_tick(e);
 			}
 		}
 		return 0;
@@ -199,7 +199,7 @@ static int flip_input(zrn_element_t* const e, zrn_input_t* const in) {
 			f->b_dragging = true;
 			f->b_sliding = false;
 			if (e->root) zrn_set_capture(e->root, e);
-			e->b_wants_tick = true;
+			zrn_want_tick(e);
 		}
 		/* a quarter of a page of rubber at the ends */
 		f->offset = clampf((float)f->base.selected_index - (in->x - f->press_x) / width, -0.25f, (float)n - 0.75f);

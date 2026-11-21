@@ -12,6 +12,7 @@ An application that embeds zrnui into its own shell links zrnui alone (see [Embe
 An ordinary Wayland application links both.
 
 **Documentation:** [zrnui/docs/index.md](zrnui/docs/index.md) - getting started, every widget, theme, embedding.
+**Publishing:** [docs/publishing.md](docs/publishing.md) - from a working app to an app in the ztOS store.
 
 ## Hello world
 
@@ -206,7 +207,7 @@ examples/     helloworld, demoapp
 cmake/        the cross toolchain file for phones (toolchain-aarch64.cmake)
 tools/        zrn (build, upload and run on a phone), Dockerfile (the aarch64 build image)
 zrnui/docs/   the documentation of the UI library
-docs/         CODESTYLE.md (code style)
+docs/         CODESTYLE.md (code style), publishing.md (putting an app in the store)
 ```
 
 Code style: [docs/CODESTYLE.md](docs/CODESTYLE.md).

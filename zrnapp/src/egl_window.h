@@ -20,8 +20,10 @@ typedef struct zrnapp_gl zrnapp_gl_t;
 zrnapp_gl_t* zrnapp_gl_create(void* wl_display, void* wl_surface, int width, int height);
 /** Resizes the wl_egl_window to the new buffer size. */
 void zrnapp_gl_resize(zrnapp_gl_t* gl, int width, int height);
-/** Paints the root when something changed and shows the frame (nothing is swapped when nothing was painted); resizes first when the size differs. */
-void zrnapp_gl_present(zrnapp_gl_t* gl, Zid root, int width, int height);
+/** Paints the root into the back buffer when something changed; resizes first when the size differs. @return true when a frame was painted, to be shown by zrnapp_gl_swap. */
+bool zrnapp_gl_paint(zrnapp_gl_t* gl, Zid root, int width, int height);
+/** Shows the frame zrnapp_gl_paint painted (eglSwapBuffers: the commit of the surface). */
+void zrnapp_gl_swap(zrnapp_gl_t* gl);
 /** Frees the context, the EGL window and the renderer; NULL is allowed. Call it before the wl_surface goes away. */
 void zrnapp_gl_destroy(zrnapp_gl_t* gl);
 
@@ -33,7 +35,8 @@ static inline zrnapp_gl_t* zrnapp_gl_create(void* wl_display, void* wl_surface, 
 	return nullptr;
 }
 static inline void zrnapp_gl_resize(zrnapp_gl_t* gl, int width, int height) { (void)gl; (void)width; (void)height; }
-static inline void zrnapp_gl_present(zrnapp_gl_t* gl, Zid root, int width, int height) { (void)gl; (void)root; (void)width; (void)height; }
+static inline bool zrnapp_gl_paint(zrnapp_gl_t* gl, Zid root, int width, int height) { (void)gl; (void)root; (void)width; (void)height; return false; }
+static inline void zrnapp_gl_swap(zrnapp_gl_t* gl) { (void)gl; }
 static inline void zrnapp_gl_destroy(zrnapp_gl_t* gl) { (void)gl; }
 
 #endif

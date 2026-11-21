@@ -128,13 +128,19 @@ void zrn_xf_of_element(const zrn_element_t* const e, const float origin_x, const
 	/* applied last to first: the centre to the origin, the rotations, the scale, back, and the slide */
 	xf_translate(out, cx + e->translate_x * scale, cy + e->translate_y * scale, 0);
 	if (e->render_scale != 1.0f) xf_scale(out, e->render_scale);
+	if (e->scale_y != 1.0f) {
+		float r[16];
+		zrn_xf_identity(r);
+		r[5] = e->scale_y;
+		zrn_xf_mul(out, out, r);
+	}
 	if (e->rot_x != 0.0f) xf_rotate_x(out, e->rot_x);
 	if (e->rot_y != 0.0f) xf_rotate_y(out, e->rot_y);
 	xf_translate(out, -cx, -cy, 0);
 }
 
 void zrn_update_transformed(zrn_element_t* const e) {
-	e->b_transformed = e->rot_x != 0.0f || e->rot_y != 0.0f || e->render_scale != 1.0f || e->translate_x != 0.0f || e->translate_y != 0.0f;
+	e->b_transformed = e->rot_x != 0.0f || e->rot_y != 0.0f || e->render_scale != 1.0f || e->scale_y != 1.0f || e->translate_x != 0.0f || e->translate_y != 0.0f;
 }
 
 void Zelement_set_projection(const Zid element, const float rotation_x, const float rotation_y, const float center_x, const float center_y) {
@@ -145,7 +151,7 @@ void Zelement_set_projection(const Zid element, const float rotation_x, const fl
 	e->proj_cx = center_x;
 	e->proj_cy = center_y;
 	zrn_update_transformed(e);
-	zrn_changed_paint(e);
+	zrn_changed_render(e);
 }
 
 void Zelement_set_render_scale(const Zid element, const float scale) {
@@ -153,7 +159,7 @@ void Zelement_set_render_scale(const Zid element, const float scale) {
 	if (!e) return;
 	e->render_scale = scale;
 	zrn_update_transformed(e);
-	zrn_changed_paint(e);
+	zrn_changed_render(e);
 }
 
 void Zelement_set_translate(const Zid element, const float x, const float y) {
@@ -162,7 +168,7 @@ void Zelement_set_translate(const Zid element, const float x, const float y) {
 	e->translate_x = x;
 	e->translate_y = y;
 	zrn_update_transformed(e);
-	zrn_changed_paint(e);
+	zrn_changed_render(e);
 }
 
 void Zelement_set_tilt(const Zid element, const bool enabled) {
@@ -192,7 +198,7 @@ static void property_set(zrn_element_t* const e, const ZAnimatedProperty p, cons
 	if (!slot) return;
 	*slot = v;
 	zrn_update_transformed(e);
-	zrn_changed_paint(e);
+	zrn_changed_render(e);
 }
 
 float Zelement_get_property(const Zid element, const ZAnimatedProperty property) {
@@ -225,13 +231,14 @@ void Zelement_animate(const Zid element, const ZAnimatedProperty property, const
 		}
 	}
 	e->tweens->p[property].active = 1;
+	zrn_tick_epoch++;
 	e->tweens->p[property].from = *slot;
 	e->tweens->p[property].to = to;
 	e->tweens->p[property].start = (float)e->root->time_ms;
 	e->tweens->p[property].duration = duration_ms;
 	e->tweens->p[property].delay = delay_ms;
 	e->tweens->p[property].easing = easing;
-	zrn_changed_paint(e);
+	zrn_changed_render(e);
 }
 
 bool Zelement_is_animating(const Zid element) {
@@ -318,7 +325,7 @@ void zrn_tilt_tick(zrn_root_t* const r, const float dt) {
 	e->rot_x = deg_x;
 	e->render_scale = 1 - PRESS_SINK * eased;
 	zrn_update_transformed(e);
-	zrn_changed_paint(e);
+	zrn_changed_render(e);
 	if (r->tilt_amount <= 0 && r->tilt_target <= 0) {
 		e->rot_x = e->rot_y = 0;
 		e->render_scale = 1;

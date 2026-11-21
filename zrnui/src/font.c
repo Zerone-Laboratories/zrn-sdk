@@ -7,8 +7,9 @@
  * text is drawn; only the FT_Face of a font that is really used is opened, on first use.
  *
  * The faces, in the order they are tried, the first that is in the registry wins:
- *   1. a file of the exact weight in the font directory (the Windows names of Segoe UI, the Segoe WP
- *      ones of the phone, the lower-case ones of the ztOS fonts);
+ *   1. a file of the exact weight in the font directory, names matched without case: the Segoe WP
+ *      files of the phone firmware first (SegoeWP.ttf, SegoeWP-Light/-Semilight/-Semibold/-Bold.ttf),
+ *      then the Windows names of Segoe UI (SEGOEUI.TTF is found as segoeui.ttf);
  *   2. Segoe installed in the system ("Segoe WP", then "Segoe UI"), the nearest weight;
  *   3. a Segoe file of the font directory that stands in for the weight (Regular for the light
  *      faces, Bold for Semibold), so that a missing weight does not mix in another family;
@@ -20,6 +21,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <dirent.h>
 
@@ -47,29 +49,35 @@ typedef struct zrn_face_spec {
 
 static const zrn_face_spec_t g_face_specs[ZRN_FACE_COUNT] = {
 	{
-		.exact = { "Segoe UI.ttf", "segoeui.ttf", "Segoe WP.ttf", nullptr },
+		.exact = { "SegoeWP.ttf", "Segoe WP.ttf", "Segoe UI.ttf", "segoeui.ttf", nullptr },
 		.standin = { "selawk.ttf", nullptr },
 		.weight = ZRN_WEIGHT_REGULAR,
 	},
 	{
-		.exact = { "Segoe UI Light.ttf", "segoeuil.ttf", nullptr },
-		.standin = { "Segoe UI.ttf", "segoeui.ttf", "selawkl.ttf", nullptr },
+		.exact = { "SegoeWP-Light.ttf", "Segoe WP Light.ttf", "Segoe UI Light.ttf", "segoeuil.ttf", nullptr },
+		.standin = { "SegoeWP.ttf", "Segoe UI.ttf", "segoeui.ttf", "selawkl.ttf", nullptr },
 		.weight = ZRN_WEIGHT_LIGHT,
 	},
 	{
-		.exact = { "Segoe UI Semilight.ttf", "segoeuisl.ttf", "Segoe WP SemiLight.ttf", nullptr },
-		.standin = { "Segoe UI.ttf", "segoeui.ttf", "selawksl.ttf", "selawkl.ttf", nullptr },
+		.exact = { "SegoeWP-Semilight.ttf", "Segoe WP SemiLight.ttf", "Segoe UI Semilight.ttf", "segoeuisl.ttf", nullptr },
+		.standin = { "SegoeWP.ttf", "Segoe UI.ttf", "segoeui.ttf", "selawksl.ttf", "selawkl.ttf", nullptr },
 		.weight = ZRN_WEIGHT_SEMILIGHT,
 	},
 	{
-		.exact = { "Segoe UI Semibold.ttf", "seguisb.ttf", "Segoe WP Semibold.ttf", nullptr },
-		.standin = { "Segoe UI Bold.ttf", "segoeuib.ttf", "selawksb.ttf", nullptr },
+		.exact = { "SegoeWP-Semibold.ttf", "Segoe WP Semibold.ttf", "Segoe UI Semibold.ttf", "seguisb.ttf", nullptr },
+		.standin = { "SegoeWP-Bold.ttf", "Segoe UI Bold.ttf", "segoeuib.ttf", "selawksb.ttf", nullptr },
 		.weight = ZRN_WEIGHT_SEMIBOLD,
 	},
 	{
-		.exact = { "Segoe UI Bold.ttf", "segoeuib.ttf", nullptr },
+		.exact = { "SegoeWP-Bold.ttf", "Segoe WP Bold.ttf", "Segoe UI Bold.ttf", "segoeuib.ttf", nullptr },
 		.standin = { "selawkb.ttf", nullptr },
 		.weight = ZRN_WEIGHT_BOLD,
+	},
+	{
+		/* the icon font of Windows Phone and of the ztOS shell; found by file here, by family "Segoe UI Symbol" in the system */
+		.exact = { "seguisym.ttf", "Segoe UI Symbol.ttf", nullptr },
+		.standin = { nullptr },
+		.weight = ZRN_WEIGHT_REGULAR,
 	},
 };
 
@@ -103,6 +111,8 @@ static FcFontSet* g_set;
 #endif
 /** The registry entry of each face, ZRN_NO_FONT when there is none. */
 static uint32_t g_resolved[ZRN_FACE_COUNT];
+/** The registry entry of the colour emoji font (Noto Color Emoji), ZRN_NO_FONT when there is none. */
+static uint32_t g_emoji = ZRN_NO_FONT;
 
 static zrn_font_entry_t* zrn_entry_add(void) {
 	if (g_font_count < g_font_cap) {
@@ -214,7 +224,7 @@ static uint32_t zrn_find_in_directory(const char* const* const names) {
 	for (uint32_t n = 0; n < ZRN_FACE_CANDIDATES && names[n]; n++) {
 		for (uint32_t i = 0; i < g_font_count; i++) {
 			const zrn_font_entry_t* const entry = &g_fonts[i];
-			if (entry->b_is_bundled && strcmp(entry->file, names[n]) == 0) return i;
+			if (entry->b_is_bundled && strcasecmp(entry->file, names[n]) == 0) return i;
 		}
 	}
 	return ZRN_NO_FONT;
@@ -236,25 +246,40 @@ static uint32_t zrn_find_system_segoe(const int32_t weight) {
 	return ZRN_NO_FONT;
 }
 
+/* The system font of a family by its exact name (Segoe UI Symbol). */
+static uint32_t zrn_find_system_family(const char* const name) {
+	for (uint32_t i = 0; i < g_font_count; i++) {
+		const zrn_font_entry_t* const entry = &g_fonts[i];
+		if (!entry->b_is_bundled && entry->family && strcmp(entry->family, name) == 0) return i;
+	}
+	return ZRN_NO_FONT;
+}
+
 static void zrn_resolve_faces(void) {
 	for (uint32_t f = 0; f < ZRN_FACE_COUNT; f++) {
 		uint32_t found = zrn_find_in_directory(g_face_specs[f].exact);
+		if (found == ZRN_NO_FONT && f == ZRN_FACE_SYMBOL) {
+			g_resolved[f] = zrn_find_system_family("Segoe UI Symbol");
+			continue;
+		}
 		if (found == ZRN_NO_FONT) found = zrn_find_system_segoe(g_face_specs[f].weight);
 		if (found == ZRN_NO_FONT) found = zrn_find_in_directory(g_face_specs[f].standin);
 		g_resolved[f] = found;
 	}
 }
 
-#ifdef Z_DEBUG
+/* With Z_DEBUG, or when $ZRNUI_FONT_LOG is set, the file of each face goes to stderr. */
 static void zrn_report_inventory(void) {
+#ifndef Z_DEBUG
+	if (!getenv("ZRNUI_FONT_LOG")) return;
+#endif
 	uint32_t system_count = 0;
 	for (uint32_t i = 0; i < g_font_count; i++) system_count += g_fonts[i].b_is_bundled ? 0 : 1;
-	Z_DEBUG_LOG("fonts: %u in %s, %u in the system\n", g_font_count - system_count, zrn_font_dir(), system_count);
+	fprintf(stderr, "fonts: %u in %s, %u in the system\n", g_font_count - system_count, zrn_font_dir(), system_count);
 	for (uint32_t f = 0; f < ZRN_FACE_COUNT; f++) {
-		Z_DEBUG_LOG("fonts: face %u -> %s\n", f, g_resolved[f] != ZRN_NO_FONT ? g_fonts[g_resolved[f]].path : "(none)");
+		fprintf(stderr, "fonts: face %u -> %s\n", f, g_resolved[f] != ZRN_NO_FONT ? g_fonts[g_resolved[f]].path : "(none)");
 	}
 }
-#endif
 
 /* ---- opening ---- */
 
@@ -274,9 +299,12 @@ uint8_t zrn_face_index(const ZFontFamily family) {
 		case Z_FONT_SEMILIGHT: return ZRN_FACE_SEMILIGHT;
 		case Z_FONT_SEMIBOLD: return ZRN_FACE_SEMIBOLD;
 		case Z_FONT_BOLD: return ZRN_FACE_BOLD;
+		case Z_FONT_SYMBOL: return ZRN_FACE_SYMBOL;
 		default: return ZRN_FACE_REGULAR;
 	}
 }
+
+bool zrn_have_symbol_font(void) { return g_resolved[ZRN_FACE_SYMBOL] != ZRN_NO_FONT; }
 
 FT_Face zrn_face(const uint8_t face) {
 	if (g_resolved[face] != ZRN_NO_FONT) {
@@ -315,7 +343,45 @@ static FT_Face zrn_find_fallback(const uint8_t face, const uint32_t cp) {
 #endif
 }
 
+/* The colour emoji font of the registry: a file of the font directory named like Noto's, else the family "Noto Color Emoji",
+ * else any family with "Emoji" in its name. */
+static void zrn_resolve_emoji(void) {
+	g_emoji = ZRN_NO_FONT;
+	for (uint32_t i = 0; i < g_font_count; i++) {
+		const zrn_font_entry_t* const entry = &g_fonts[i];
+		if (entry->b_is_bundled && strcmp(entry->file, "NotoColorEmoji.ttf") == 0) { g_emoji = i; return; }
+	}
+	for (uint32_t i = 0; i < g_font_count; i++) {
+		const zrn_font_entry_t* const entry = &g_fonts[i];
+		if (!entry->family) continue;
+		if (strcmp(entry->family, "Noto Color Emoji") == 0) { g_emoji = i; return; }
+		if (g_emoji == ZRN_NO_FONT && strstr(entry->family, "Emoji")) g_emoji = i;
+	}
+}
+
+bool zrn_is_emoji(const uint32_t cp) {
+	/* the pictographs and the symbols that have an emoji form; (c), (r) and TM stay text */
+	return (cp >= 0x1f000 && cp < 0x1fb00) || (cp >= 0x2600 && cp < 0x27c0) || (cp >= 0x2b00 && cp < 0x2c00) ||
+		(cp >= 0x2190 && cp < 0x2200 && cp != 0x2192) || (cp >= 0x2300 && cp < 0x2400) || cp == 0x3030 || cp == 0x303d || cp == 0x3297 || cp == 0x3299;
+}
+
+bool zrn_is_emoji_joiner(const uint32_t cp) {
+	/* without shaping a sequence is drawn as its pictographs: what joins or varies them takes no room and draws nothing */
+	return cp == 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f) || (cp >= 0x1f3fb && cp <= 0x1f3ff) || cp == 0x20e3 || (cp >= 0xe0020 && cp <= 0xe007f);
+}
+
+FT_Face zrn_emoji_face(void) {
+	if (g_emoji == ZRN_NO_FONT) return nullptr;
+	return zrn_entry_face(&g_fonts[g_emoji]);
+}
+
+bool zrn_face_is_color(FT_Face const ft) { return ft && FT_HAS_COLOR(ft) && !FT_IS_SCALABLE(ft) && ft->num_fixed_sizes > 0; }
+
 FT_Face zrn_face_for_char(const uint8_t face, const uint32_t cp) {
+	if (zrn_is_emoji(cp)) {
+		FT_Face const emoji = zrn_emoji_face();
+		if (emoji && FT_Get_Char_Index(emoji, cp) != 0) return emoji;
+	}
 	FT_Face const base = zrn_face(face);
 	if (!base || cp <= 0x20 || FT_Get_Char_Index(base, cp) != 0) return base;
 	FT_Face const other = zrn_find_fallback(face, cp);
@@ -340,9 +406,8 @@ bool zrn_fonts_init(void) {
 	zrn_scan_system();
 #endif
 	zrn_resolve_faces();
-#ifdef Z_DEBUG
+	zrn_resolve_emoji();
 	zrn_report_inventory();
-#endif
 	if (zrn_face(ZRN_FACE_REGULAR)) return true;
 	zrn_error(Z_ERROR_IO, "no font for the regular face: none of %u fonts in %s or in the system fits", g_font_count, zrn_font_dir());
 	zrn_fonts_shutdown();
@@ -359,6 +424,7 @@ void zrn_fonts_shutdown(void) {
 	g_fonts = nullptr;
 	g_font_count = g_font_cap = 0;
 	for (uint32_t f = 0; f < ZRN_FACE_COUNT; f++) g_resolved[f] = ZRN_NO_FONT;
+	g_emoji = ZRN_NO_FONT;
 	if (g_ft) FT_Done_FreeType(g_ft);
 	g_ft = nullptr;
 #ifdef ZRNUI_HAVE_FONTCONFIG

@@ -86,19 +86,19 @@ static void test_icon_pixels(void) {
 	c = Zpanel_add(wrap, Zapp_bar_button_create("none", Zsymbol_icon_create(Z_SYMBOL_ACCEPT)));
 	Zelement_set_enabled(c, false);
 	Zroot_update_layout(root);
-	/* the circle of the button: 38.5 px, 12 px under the top, in the middle of 80 px */
+	/* the circle of the button: 33 px, 8 px under the top, in the middle of 59 px (measured on the phone) */
 	r = Zelement_get_bounds(a);
-	CHECK_NEAR(r.width, 80);
-	pt = Zelement_to_root(a, (ZPoint){ 40, 12 + 19.25f });
+	CHECK_NEAR(r.width, 59);
+	pt = Zelement_to_root(a, (ZPoint){ 29.5f, 8 + 16.5f });
 	/* the cross of the Add symbol is in the foreground color, the circle inside is the page */
 	CHECK(pixel_is(root, (int)pt.x, (int)pt.y, 255, 255, 255));
 	CHECK(pixel_is(root, (int)pt.x + 6, (int)pt.y + 6, 0, 0, 0));
-	/* the outline: 2.5 px at the left edge of the circle */
-	CHECK(pixel_is(root, (int)(pt.x - 19.25f + 1.0f), (int)pt.y, 255, 255, 255));
-	CHECK(pixel_is(root, (int)(pt.x - 19.25f - 2.0f), (int)pt.y, 0, 0, 0));
+	/* the outline: 2 px at the left edge of the circle */
+	CHECK(pixel_is(root, (int)(pt.x - 16.5f + 1.0f), (int)pt.y, 255, 255, 255));
+	CHECK(pixel_is(root, (int)(pt.x - 16.5f - 2.0f), (int)pt.y, 0, 0, 0));
 	/* the glyph of a FontIcon and the polygon of a PathIcon are drawn in the circle */
 	pt = center(f);
-	pt.y = Zelement_to_root(f, (ZPoint){ 0, 12 + 19.25f }).y;
+	pt.y = Zelement_to_root(f, (ZPoint){ 0, 8 + 16.5f }).y;
 	{
 		int x, y, white = 0;
 		for (y = (int)pt.y - 8; y <= (int)pt.y + 8; y++) for (x = (int)pt.x - 8; x <= (int)pt.x + 8; x++) {
@@ -108,10 +108,10 @@ static void test_icon_pixels(void) {
 		}
 		CHECK(white > 10);
 	}
-	pt = Zelement_to_root(p, (ZPoint){ 40, 12 + 19.25f });
+	pt = Zelement_to_root(p, (ZPoint){ 29.5f, 8 + 16.5f });
 	CHECK(pixel_is(root, (int)pt.x, (int)pt.y, 255, 255, 255));
 	/* a disabled one is PhoneDisabled: 40% white */
-	pt = Zelement_to_root(c, (ZPoint){ 40, 12 + 19.25f - 19.25f + 1.0f });
+	pt = Zelement_to_root(c, (ZPoint){ 29.5f, 8 + 1.0f });
 	{
 		int r2, g2, b2;
 		test_pixel(root, (int)pt.x, (int)pt.y, &r2, &g2, &b2);
@@ -167,16 +167,16 @@ static void test_app_bar_button(void) {
 	CHECK_STR(Zapp_bar_button_get_label(b), "save");
 	CHECK(Zapp_bar_button_get_icon(b) != Z_INVALID_ID && Zelement_get_class(Zapp_bar_button_get_icon(b)) == Z_CLASS_SYMBOL_ICON);
 	r = Zelement_get_bounds(b);
-	/* 80 wide, 12 + 38.5 + 4 + the label (9.5 px) + 10.5 */
-	CHECK_NEAR(r.width, 80);
-	CHECK(r.height > 12 + 38.5f + 4 + 10.5f + 8 && r.height < 12 + 38.5f + 4 + 10.5f + 20);
-	/* the toggle button is a pixel higher at the top of its circle: 11 */
+	/* 59 wide, 8 + 33 + 4 + the label (9.5 px) + 10.5 */
+	CHECK_NEAR(r.width, 59);
+	CHECK(r.height > 8 + 33 + 4 + 10.5f + 8 && r.height < 8 + 33 + 4 + 10.5f + 20);
+	/* the toggle button is a pixel higher at the top of its circle: 7 */
 	CHECK(Zelement_get_bounds(tg).height < r.height + 0.01f);
 	Zapp_bar_button_set_is_compact(b, true);
 	Zroot_update_layout(root);
 	r = Zelement_get_bounds(b);
-	CHECK_NEAR(r.width, 48);
-	CHECK_NEAR(r.height, 12 + 38.5 + 4);
+	CHECK_NEAR(r.width, 59);
+	CHECK_NEAR(r.height, 8 + 33 + 4);
 	CHECK(Zapp_bar_button_get_is_compact(b));
 	CHECK_NEAR(Zelement_get_bounds(sep).width, 12);
 	Zapp_bar_separator_set_is_compact(sep, true);
@@ -191,20 +191,20 @@ static void test_app_bar_button(void) {
 	CHECK(Ztoggle_button_get_is_checked(tg));
 	/* pressed: the circle is filled with the foreground and the icon takes the background color */
 	{
-		ZPoint c = Zelement_to_root(b, (ZPoint){ 24, 12 + 19.25f });
+		ZPoint c = Zelement_to_root(b, (ZPoint){ 29.5f, 8 + 16.5f });
 		Zroot_inject_pointer(root, Z_POINTER_MOVE, c.x, c.y);
 		Zroot_inject_pointer(root, Z_POINTER_DOWN, c.x, c.y);
 		CHECK(Zbutton_is_pressed(b));
-		CHECK(pixel_is(root, (int)c.x + 8, (int)c.y + 8, 255, 255, 255));
+		CHECK(pixel_is(root, (int)c.x, (int)c.y + 12, 255, 255, 255));
 		Zroot_inject_pointer(root, Z_POINTER_UP, c.x, c.y);
-		CHECK(pixel_is(root, (int)c.x + 8, (int)c.y + 8, 0, 0, 0));
+		CHECK(pixel_is(root, (int)c.x, (int)c.y + 12, 0, 0, 0));
 	}
 	/* checked: filled, as if it were pressed */
 	{
-		ZPoint c = Zelement_to_root(tg, (ZPoint){ 40, 11 + 19.25f });
-		CHECK(pixel_is(root, (int)c.x + 10, (int)c.y + 10, 255, 255, 255));
+		ZPoint c = Zelement_to_root(tg, (ZPoint){ 29.5f, 7 + 16.5f });
+		CHECK(pixel_is(root, (int)c.x, (int)c.y + 12, 255, 255, 255));
 		Ztoggle_button_set_is_checked(tg, false);
-		CHECK(pixel_is(root, (int)c.x + 10, (int)c.y + 10, 0, 0, 0));
+		CHECK(pixel_is(root, (int)c.x, (int)c.y + 12, 0, 0, 0));
 	}
 	Zroot_destroy(root);
 }
@@ -257,12 +257,12 @@ static void test_page_bars_layout(void) {
 	CHECK(Zelement_get_class(bar) == Z_CLASS_COMMAND_BAR && Zelement_is_a(bar, Z_CLASS_APP_BAR) && Zelement_is_a(bar, Z_CLASS_CONTENT_CONTROL));
 	pr = Zelement_get_bounds(page);
 	r = Zelement_get_bounds(bar);
-	/* closed, Compact: 1.5 + 54.5 + 1.5 = 57.5 px at the bottom of the page */
-	CHECK_NEAR(r.height, 57.5);
+	/* closed, Compact: 1.5 + 47.5 + 1.5 = 50.5 px at the bottom of the page (as measured on the phone) */
+	CHECK_NEAR(r.height, 50.5);
 	CHECK_NEAR(r.y + r.height, pr.height);
 	CHECK_NEAR(r.width, 480);
 	content = Zpage_get_content(page);
-	CHECK_NEAR(Zelement_get_bounds(content).height, pr.height - 57.5);
+	CHECK_NEAR(Zelement_get_bounds(content).height, pr.height - 50.5);
 	CHECK(Zapp_bar_get_closed_display_mode(bar) == Z_APP_BAR_CLOSED_COMPACT);
 	/* Minimal: 35 px */
 	Zapp_bar_set_closed_display_mode(bar, Z_APP_BAR_CLOSED_MINIMAL);
@@ -281,8 +281,8 @@ static void test_page_bars_layout(void) {
 	Zpage_set_top_app_bar(page, top);
 	Zroot_update_layout(root);
 	CHECK_NEAR(Zelement_get_bounds(top).y, 0);
-	CHECK_NEAR(Zelement_get_bounds(content).y, 57.5);
-	CHECK_NEAR(Zelement_get_bounds(content).height, pr.height - 115);
+	CHECK_NEAR(Zelement_get_bounds(content).y, 50.5);
+	CHECK_NEAR(Zelement_get_bounds(content).height, pr.height - 101);
 	/* the one that was there is destroyed when another is set */
 	Zpage_set_top_app_bar(page, Z_INVALID_ID);
 	CHECK(!Zelement_is_valid(top));
@@ -302,8 +302,9 @@ static void test_page_bar_pixels(void) {
 	CHECK(pixel_is(root, 5, y0 + 30, 0x1F, 0x1F, 0x1F));
 	CHECK(pixel_is(root, 5, y0, 0, 0, 0));
 	CHECK(pixel_is(root, 5, y0 + 3, 0x1F, 0x1F, 0x1F));
-	/* the three dots at the right edge: the middle one is in the foreground, in line with the circles */
-	CHECK(pixel_is(root, 480 - 15, y0 + (int)(1.5f + 12 + 19.25f), 255, 255, 255));
+	/* the three dots in the top right corner: the middle one 27 px from the edge, its top level with the tops of the circles */
+	CHECK(pixel_is(root, 480 - 27, y0 + (int)(1.5f + 8 + 1.75f), 255, 255, 255));
+	CHECK(pixel_is(root, 480 - 27, y0 + (int)(1.5f + 8 + 16.5f), 0x1F, 0x1F, 0x1F));
 	show(root, "command-bar-closed");
 	Zapp_bar_set_is_open(bar, true);
 	Zroot_update_layout(root);
@@ -338,7 +339,7 @@ static void test_open_close(void) {
 	tap(root, (ZPoint){ 480 - 15, Zelement_to_root(bar, (ZPoint){ 0, open.height - 40 }).y });
 	CHECK(!Zapp_bar_get_is_open(bar) && g_closed == 1);
 	Zroot_update_layout(root);
-	CHECK_NEAR(Zelement_get_bounds(bar).height, 57.5);
+	CHECK_NEAR(Zelement_get_bounds(bar).height, 50.5);
 	CHECK(Zapp_bar_button_get_is_compact(g_prim));
 	/* IsOpen by the program raises the events once per change */
 	Zapp_bar_set_is_open(bar, true);
@@ -429,11 +430,11 @@ static void test_app_bar_content(void) {
 	Zroot_set_visual(root, page);
 	Zroot_update_layout(root);
 	/* a plain AppBar is as tall as its content when it is open and has the page background (AppBarBackgroundThemeBrush) */
-	CHECK_NEAR(Zelement_get_bounds(bar).height, 57.5);
+	CHECK_NEAR(Zelement_get_bounds(bar).height, 50.5);
 	CHECK(pixel_is(root, 300, 20, 0, 0, 0));
 	Zapp_bar_set_is_open(bar, true);
 	Zroot_update_layout(root);
-	CHECK_NEAR(Zelement_get_bounds(bar).height, 57.5);
+	CHECK_NEAR(Zelement_get_bounds(bar).height, 50.5);
 	Zapp_bar_set_closed_display_mode(bar, Z_APP_BAR_CLOSED_MINIMAL);
 	Zapp_bar_set_is_open(bar, false);
 	Zroot_update_layout(root);

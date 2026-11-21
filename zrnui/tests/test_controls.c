@@ -387,7 +387,9 @@ static void test_81_default_sizes(void) {
 	CHECK_NEAR(Zelement_get_bounds(ring).width, 480);
 	Ztoggle_switch_set_header(sw, "Header");
 	Zroot_update_layout(root);
-	CHECK(Zelement_get_bounds(sw).height > 45.5 + 15);
+	/* the header row goes above the content row and the switch sits bottom right of both: the "Off" row already fills
+	 * most of the 36 px of the switch, so the header adds its own row less that overlap (about 14 px with Selawik) */
+	CHECK(Zelement_get_bounds(sw).height > 45.5 + 10);
 	Zroot_destroy(root);
 }
 

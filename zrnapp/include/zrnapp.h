@@ -48,6 +48,12 @@ extern "C" {
 		 */
 		void (*on_connect)(void* wl_display, void* user_data);
 		void* user_data;
+		/**
+		 * false (the default): the root follows the theme and the accent of the shell, read from its config file
+		 * (~/.config/ztmetro/config, or $ZRNAPP_SHELL_CONFIG) when the window opens and again, live, whenever the shell changes
+		 * them (inotify, no polling); Zroot_on_theme_changed tells the app. true: the app sets its own theme and accent.
+		 */
+		bool b_keep_theme;
 	} ZWindowOptions;
 
 	/**
@@ -71,6 +77,17 @@ extern "C" {
 	 * is no longer used as the app id, which it was before and which made "Hello World" the identity of a window.
 	 */
 	ZRNAPP_API bool Zwindow_run(Zid root, const char* title);
+
+	/** @brief Told the height the on-screen keyboard covers at the bottom of the window (logical px), 0 when it has gone. */
+	typedef void (*ZInputPaneCallback)(float occluded_height, void* user_data);
+	/**
+	 * @brief InputPane.Showing / Hiding. While a text box (TextBox, PasswordBox, AutoSuggestBox) has the focus, the window asks the
+	 * shell (ztMETRO) for its keyboard, sets Zroot_set_input_pane_height to the keyboard's height (so the root arranges above it, as a
+	 * WP page does) and calls `callback`; when the focus leaves, the keyboard is put away, the height is 0 and `callback` is called
+	 * again. The height comes from the shell's config (key_height). One callback for the process; NULL removes it. Call before or
+	 * during Zwindow_run.
+	 */
+	ZRNAPP_API void Zwindow_on_input_pane(ZInputPaneCallback callback, void* user_data);
 
 	/** @brief Ends the loop of Zwindow_run / Zwindow_run_ex, from a callback of the UI. Does nothing when no window is open. */
 	ZRNAPP_API void Zwindow_quit(void);

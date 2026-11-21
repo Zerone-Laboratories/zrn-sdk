@@ -83,7 +83,7 @@ if(WAYLAND_FOUND)
 	endforeach()
 endif()
 
-set(ZRNAPP_SOURCES src/window.c src/app_id.c ${ZRNAPP_PROTOCOLS})
+set(ZRNAPP_SOURCES src/window.c src/app_id.c src/shell_theme.c ${ZRNAPP_PROTOCOLS})
 if(WAYLAND_FOUND)
 	# the GPU window needs EGL on the Wayland surface; without it the window draws with wl_shm
 	if(GLES_FOUND AND WAYLAND_EGL_FOUND)

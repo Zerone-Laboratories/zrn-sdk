@@ -81,6 +81,8 @@ struct zrn_element {
 	int tab_index;
 	/** The class's tick is called by Zroot_tick only while this is true; a control that is done animating must clear it. */
 	bool b_wants_tick;
+	/** The value of zrn_tick_epoch when Zroot_tick last found nothing to tick in this subtree: it is skipped until the epoch moves. */
+	uint32_t tick_quiet_epoch;
 	/** Gets ZRN_IN_PREVIEW_* of the presses, moves and releases that land on its descendants, before the target sees them. */
 	bool b_observes_pointer;
 	/** A drag that starts on this element is its own: a ScrollViewer around it does not take the pointer away. */
@@ -89,6 +91,16 @@ struct zrn_element {
 	/* render transform (anim.c), not layout: rotation in degrees about the point (proj_cx, proj_cy) of the element, as fractions of its size;
 	   render_scale 1 is none; translate_x and translate_y in logical px */
 	float rot_x, rot_y, proj_cx, proj_cy, render_scale, translate_x, translate_y;
+	/** zrn-frosted-diffusion (Zelement_set_frosted_diffusion): the effect, its tint (a ZThemeResource), and the
+	 * renderer's state for it (host.c: the strip, its blur and what was under it when they were made) */
+	uint8_t backdrop;
+	int backdrop_tint;
+	struct zrn_backdrop* backdrop_state;
+	/** Bumped when the element itself changes how it looks or where its content is (zrn_changed_paint, zrn_changed_layout) and
+	 * when its bitmap cache is painted again: what lies under a backdrop is known by these. */
+	uint32_t paint_gen;
+	/** a vertical scale on top of render_scale, about proj_cy: 1 is none (a ScrollViewer squeezes its content past an end) */
+	float scale_y;
 	/** true when any of the above is not the identity. */
 	bool b_transformed;
 	/** Leans when pressed (Zelement_set_tilt); on by default for list items, check and radio buttons, hyperlinks and menu items. */
@@ -101,6 +113,16 @@ struct zrn_element {
 	bool b_destroying;
 
 	zrn_handler_t handlers[ZRN_HANDLER_COUNT];
+
+	/* CacheMode (Zelement_set_cache_mode): the texture the subtree was painted into (an image of the GL renderer, no pixels in memory), whether it
+	   still shows the subtree, and the scale and the theme epoch it was painted at */
+	ZCacheMode cache_mode;
+	struct zrn_image* cache;
+	bool b_cache_valid;
+	float cache_scale;
+	uint32_t cache_epoch;
+	/** ContextFlyout: shown when the element is held; not owned. */
+	Zid context_flyout;
 
 	/** Properties bound to a ThemeResource (resources.c): a small list, NULL when there is none. */
 	struct zrn_binding* bindings;
@@ -166,8 +188,19 @@ void zrn_arrange(zrn_element_t* e, ZRect slot);
 ZSize zrn_measure_children_max(zrn_element_t* e, ZSize available);
 /** The size of the element may have changed: marks it and every ancestor unmeasured and the layout and the paint of the root dirty. */
 void zrn_changed_layout(zrn_element_t* e);
-/** Only the look changed: the root repaints, nothing is laid out again. */
+/** Only the look changed: the root repaints, nothing is laid out again. The cached bitmaps of the element and its ancestors are stale. */
 void zrn_changed_paint(zrn_element_t* e);
+/** Lets go of the backdrop (zrn-frosted-diffusion) state of an element being destroyed (host.c). */
+void zrn_backdrop_free(zrn_element_t* e);
+/** The room a vertical ScrollViewer `sv` leaves at the top and bottom of its content for the elements with a backdrop effect
+ * that overlap its ends (host.c), in logical pixels. */
+void zrn_backdrop_insets(zrn_element_t* sv, float* top, float* bottom);
+/** Whether the element has a backdrop effect: a bar with one paints no background of its own. */
+static inline bool zrn_has_backdrop(const zrn_element_t* const e) { return e->backdrop != 0; }
+/** Only the render transform or the opacity of the element itself changed: its own cached bitmap still holds, those of its ancestors do not. */
+void zrn_changed_render(zrn_element_t* e);
+/** The cached bitmaps of `e` and of its ancestors no longer show what is in them (NULL is allowed); nothing else is marked. */
+void zrn_cache_stale(zrn_element_t* e);
 /** Arrange again without measuring again (a scroll offset changed). */
 void zrn_changed_arrange(zrn_element_t* e);
 /** true when the element and all its ancestors are enabled. */
@@ -199,3 +232,13 @@ ZFontFamily zrn_inherited_font_family(const zrn_element_t* e);
 static inline ZRect zrn_local_rect(const zrn_element_t* e) { return zrn_rect(0, 0, e->rect.width, e->rect.height); }
 
 extern zrn_class_t zrn_class_element;
+
+/** Moves when an element may start to tick (zrn_want_tick, a tween started, an element added): the quiet subtrees are walked again. */
+extern uint32_t zrn_tick_epoch;
+
+/** Asks for the class's tick: what Zroot_tick walks to. Use it, not b_wants_tick = true, so that a quiet subtree is looked at again. */
+static inline void zrn_want_tick(zrn_element_t* const e) {
+	if (e->b_wants_tick) return;
+	e->b_wants_tick = true;
+	zrn_tick_epoch++;
+}

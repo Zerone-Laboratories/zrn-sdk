@@ -16,6 +16,10 @@ struct zrn_image {
 	/** The texture of the OpenGL renderer that has drawn it (render/gles.c); 0 and NULL otherwise. */
 	unsigned gl_texture;
 	void* gl_owner;
+	/** A layer (CacheMode) that lives in a region of the layer atlas of the renderer (gl_texture is the atlas, not its own):
+	 * the region starts at atlas_x, atlas_y (GL coordinates, bottom up). */
+	bool b_atlas;
+	int atlas_x, atlas_y;
 };
 
 /**

@@ -164,6 +164,10 @@ extern "C" {
 	 * so the caller quits the window. Escape does this in Zroot_inject_key.
 	 */
 	ZRNUI_API bool Zroot_back(Zid root);
+	/** A program's own step of back (BackRequested): called after the keyboard is put away and before flyouts, app bar and
+	 * page; true when it handled the back (a panel in the keyboard's place closed). NULL removes it. */
+	typedef bool (*ZBackCallback)(Zid root, void* user_data);
+	ZRNUI_API void Zroot_on_back(Zid root, ZBackCallback callback, void* user_data);
 	/**
 	 * @brief The UI scale: the layout grid is the window divided by it, the painter draws the grid
 	 * back up (at 720 x 1280 and a scale of 1.5 the page is laid out in the 480 x 800 grid and
@@ -188,6 +192,20 @@ extern "C" {
 	ZRNUI_API void Zroot_set_accent_color(Zid root, ZColor color);
 	/** @return the accent now; transparent black for an invalid root. */
 	ZRNUI_API ZColor Zroot_get_accent_color(Zid root);
+	/**
+	 * @brief Called after the theme or the accent of the root changed (Zroot_set_theme, Zroot_set_accent_color; zrnapp calls them when
+	 * the shell's theme changes), for an app that keeps resources of its own made from them. One callback per root; NULL removes it.
+	 * `sender` is the root. Not called when the value set is the one the root already has.
+	 */
+	ZRNUI_API void Zroot_on_theme_changed(Zid root, ZRoutedCallback callback, void* user_data);
+	/**
+	 * @brief InputPane.OccludedRect: the height, in the logical pixels of the window, that the on-screen keyboard covers at the bottom.
+	 * The tree is arranged in the height above it (the root shrinks, as a WP page does when the keyboard rises), the popups keep the
+	 * whole window. 0 (the default) when there is no keyboard; a negative value counts as 0. zrnapp sets it from the shell.
+	 */
+	ZRNUI_API void Zroot_set_input_pane_height(Zid root, float height);
+	/** @return The height set with Zroot_set_input_pane_height; 0 for an invalid root. */
+	ZRNUI_API float Zroot_get_input_pane_height(Zid root);
 	/** @brief The color behind the tree: PhoneBackgroundBrush of the theme unless set. */
 	ZRNUI_API void Zroot_set_background(Zid root, ZColor color);
 	/**
@@ -234,6 +252,15 @@ extern "C" {
 	 * Handlers that run from it may destroy elements, or the root.
 	 */
 	ZRNUI_API void Zroot_tick(Zid root, float delta_ms);
+
+	/**
+	 * @brief True while the last Zroot_tick moved something (a tween, a page transition, a scroll's inertia, a pivot swipe,
+	 * a theme fade, any control that ticks, but not an indeterminate progress bar or ring or a caret that tick for as
+	 * long as they are shown) or a finger holds the pointer capture (a drag). A program holds back work
+	 * that is not needed for the next frame (big replies, pictures, rows off screen) until this is false: animation
+	 * frames come first.
+	 */
+	ZRNUI_API bool Zroot_is_animating(Zid root);
 
 	/**
 	 * @brief A pointer or a finger at a point of the root, in window pixels (the logical pixels of Zroot_set_size; the UI scale is
