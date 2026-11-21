@@ -73,6 +73,12 @@ static ZRect tbx_content(const zrn_element_t* const e) {
 	return zrn_rect(in.left, in.top, zrn_maxf(0, e->rect.width - zrn_thickness_h(in)), zrn_maxf(0, e->rect.height - zrn_thickness_v(in)));
 }
 
+/* How far the lines sit down in the text area: in a box taller than its text (a composer at its least height, a box given
+ * a height) the line box is centred, as the WP TextBox's single line is; text that fills the box starts at its top. */
+static float tbx_center(const ZRect area, const float text_height) {
+	return text_height < area.height ? floorf((area.height - text_height) * 0.5f * 4.0f) / 4.0f : 0.0f;
+}
+
 /* What is shown: the text, or one bullet per character for a password. The caller frees when *heap. */
 static const char* tbx_display(const zrn_text_box_t* const b, int* const length, int* const heap) {
 	*heap = 0;
@@ -426,7 +432,7 @@ static int tbx_index_from_point(zrn_text_box_t* const b, const float x, const fl
 	const char* disp = tbx_display(b, &length, &heap);
 	zrn_text_layout_t* const l = tbx_layout(b, disp, length, area.width);
 	if (l) {
-		index = display_to_real(b, index_at(l, x - area.x + b->scroll_x, y - area.y + b->scroll_y));
+		index = display_to_real(b, index_at(l, x - area.x + b->scroll_x, y - area.y - tbx_center(area, l->height) + b->scroll_y));
 		zrn_text_layout_free(l);
 	}
 	tbx_display_release(disp, heap);
@@ -457,7 +463,7 @@ static int tbx_input(zrn_element_t* const e, zrn_input_t* const in) {
 			return 0;
 		case ZRN_IN_FOCUS_IN:
 			b->caret_blink = 0;
-			e->b_wants_tick = true;
+			zrn_want_tick(e);
 			zrn_changed_paint(e);
 			return 0;
 		case ZRN_IN_FOCUS_OUT:
@@ -553,16 +559,17 @@ static void tbx_paint(zrn_element_t* const e, zrn_painter_t* const p) {
 	disp = tbx_display(b, &length, &heap);
 	if (length == 0 && b->placeholder && *b->placeholder && !b_focused) {
 		const zrn_font_t font = tbx_font(b);
-		zrn_draw_string(p, font, b->placeholder, (int)strlen(b->placeholder), area.x, area.y, placeholder);
+		zrn_draw_string(p, font, b->placeholder, (int)strlen(b->placeholder), area.x, area.y + tbx_center(area, zrn_font_line_height(font)), placeholder);
 	}
 	l = tbx_layout(b, disp, length, area.width);
 	if (l) {
+		const float dy = tbx_center(area, l->height);
 		const ZColor selection_fg = zrn_theme_color(e, ZRN_TC_TEXT_OVER_ACCENT);
 		const ZColor accent = zrn_theme_color(e, ZRN_TC_ACCENT);
 		const int da = real_to_display(b, sel_a), db = real_to_display(b, sel_b);
 		for (i = 0; i < l->line_count; i++) {
 			const zrn_line_t* ln = &l->lines[i];
-			const float x = area.x - b->scroll_x, y = area.y - b->scroll_y + (float)i * l->line_height;
+			const float x = area.x - b->scroll_x, y = area.y + dy - b->scroll_y + (float)i * l->line_height;
 			const int s = da > ln->start ? da : ln->start, t = db < ln->end ? db : ln->end;
 			if (b_focused && b_enabled && sel_a != sel_b && s < t) {
 				/* before, selected, after */
@@ -580,7 +587,7 @@ static void tbx_paint(zrn_element_t* const e, zrn_painter_t* const p) {
 			int line;
 			float cx;
 			caret_position(l, real_to_display(b, b->caret), &line, &cx);
-			zrn_fill_rect(p, zrn_rect(area.x - b->scroll_x + cx, area.y - b->scroll_y + (float)line * l->line_height, 1.5f, l->line_height), fg);
+			zrn_fill_rect(p, zrn_rect(area.x - b->scroll_x + cx, area.y + dy - b->scroll_y + (float)line * l->line_height, 1.5f, l->line_height), fg);
 		}
 		zrn_text_layout_free(l);
 	}

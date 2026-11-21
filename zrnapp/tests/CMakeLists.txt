@@ -24,3 +24,10 @@ if(ZRNAPP_CAGE AND WAYLAND_FOUND)
 			TIMEOUT 30)
 	endif()
 endif()
+
+# the theme of the shell is read from its config file: no compositor needed
+add_executable(test_shell_theme test_shell_theme.c ../src/shell_theme.c)
+target_include_directories(test_shell_theme PRIVATE ../src)
+target_link_libraries(test_shell_theme PRIVATE zrnui::zrnui)
+target_compile_definitions(test_shell_theme PRIVATE _GNU_SOURCE)
+add_test(NAME test_shell_theme COMMAND test_shell_theme)

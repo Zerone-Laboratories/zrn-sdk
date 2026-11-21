@@ -68,3 +68,15 @@ bool Zgl_target_paint(const Zid root, ZGlTarget* const target, const int width, 
 void Zgl_target_destroy(ZGlTarget* const target) {
 	zrn_gl_destroy((zrn_gl_t*)target);
 }
+
+/* the counters of the GPU renderer (render/gles.c); layer_paints holds the mark of zrn_cache_paints between two reads */
+ZRenderStats zrn_render_stats;
+
+void Zrender_take_stats(ZRenderStats* const out) {
+	zrn_render_stats.layer_paints = zrn_cache_paints - zrn_render_stats.layer_paints;
+	if (out) *out = zrn_render_stats;
+	const uint32_t paints = zrn_cache_paints;
+	zrn_render_stats = (ZRenderStats){};
+	/* the cache counter of host.c runs on: the mark of where this read stopped */
+	zrn_render_stats.layer_paints = paints;
+}

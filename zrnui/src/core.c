@@ -9,6 +9,7 @@
 #include "zrnui/internal/element.h"
 #include "zrnui/internal/classes.h"
 #include "zrnui/internal/theme.h"
+#include "zrnui/platform.h"
 #include "zrnui/internal/resources.h"
 #include "zrnui/internal/text.h"
 #include "zrnui/internal/anim.h"
@@ -18,6 +19,7 @@
 #include "zrnui/internal/controls/buttons.h"
 #include "zrnui/internal/controls/items.h"
 #include "zrnui/internal/controls/flyout.h"
+#include "zrnui/internal/image.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -243,6 +245,8 @@ void zrn_destroy(zrn_element_t* const e) {
 	zrn_handle_free(e->id);
 	zrn_tweens_free(e);
 	zrn_bindings_free(e);
+	zrn_image_free(e->cache);
+	zrn_backdrop_free(e);
 	free(e->children);
 	free(e->name);
 	free(e->tooltip);
@@ -266,6 +270,7 @@ static void element_init(zrn_element_t* const e) {
 	e->grid_row_span = 1;
 	e->grid_column_span = 1;
 	e->render_scale = 1.0f;
+	e->scale_y = 1.0f;
 	e->proj_cx = 0.5f;
 	e->proj_cy = 0.5f;
 	e->canvas_left = Z_AUTO;
@@ -302,6 +307,8 @@ int zrn_child_index(const zrn_element_t* const parent, const zrn_element_t* cons
 
 void zrn_add_child(zrn_element_t* parent, zrn_element_t* child, int index) {
 	if (!parent || !child) return;
+	/* what it brings may tick: the quiet marks of Zroot_tick are stale */
+	zrn_tick_epoch++;
 	for (zrn_element_t* a = parent; a; a = a->parent) {
 		if (a == child) {
 			zrn_error(Z_ERROR_CYCLE, "an element cannot be added under itself");
@@ -402,8 +409,19 @@ void zrn_ordered_free(zrn_element_t** list, const bool b_heap) {
  *  layout
  * ============================================================================ */
 
+void zrn_cache_stale(zrn_element_t* e) {
+	for (; e; e = e->parent) e->b_cache_valid = false;
+}
+
+extern ZRenderStats zrn_render_stats;
+
 void zrn_changed_layout(zrn_element_t* const e) {
-	for (zrn_element_t* a = e; a; a = a->parent) a->b_measure_valid = false;
+	zrn_render_stats.layout_by = e->cls->name;
+	e->paint_gen++;
+	for (zrn_element_t* a = e; a; a = a->parent) {
+		a->b_measure_valid = false;
+		a->b_cache_valid = false;
+	}
 	if (e->root) {
 		e->root->b_layout_dirty = true;
 		e->root->b_paint_dirty = true;
@@ -421,6 +439,8 @@ void zrn_invalidate_deep(zrn_element_t* const e) {
 }
 
 void zrn_changed_arrange(zrn_element_t* const e) {
+	zrn_render_stats.layout_by = e->cls->name;
+	zrn_cache_stale(e);
 	if (e->root) {
 		e->root->b_layout_dirty = true;
 		e->root->b_paint_dirty = true;
@@ -428,6 +448,13 @@ void zrn_changed_arrange(zrn_element_t* const e) {
 }
 
 void zrn_changed_paint(zrn_element_t* const e) {
+	e->paint_gen++;
+	zrn_cache_stale(e);
+	if (e->root) e->root->b_paint_dirty = true;
+}
+
+void zrn_changed_render(zrn_element_t* const e) {
+	zrn_cache_stale(e->parent);
 	if (e->root) e->root->b_paint_dirty = true;
 }
 
@@ -824,7 +851,42 @@ void Zelement_set_opacity(const Zid element, const float opacity) {
 	zrn_element_t* const e = zrn_get(element, Z_CLASS_ELEMENT);
 	if (!e || opacity != opacity) return; /* NaN is no opacity */
 	e->opacity = opacity < 0 ? 0 : opacity > 1 ? 1 : opacity;
-	zrn_changed_paint(e);
+	zrn_changed_render(e);
+}
+
+void Zelement_set_cache_mode(const Zid element, const ZCacheMode mode) {
+	zrn_element_t* const e = zrn_get(element, Z_CLASS_ELEMENT);
+	if (!e) return;
+	if (mode != Z_CACHE_NONE && mode != Z_CACHE_BITMAP) {
+		zrn_error(Z_ERROR_INVALID_ARGUMENT, "unknown cache mode %d", (int)mode);
+		return;
+	}
+	e->cache_mode = mode;
+	if (mode == Z_CACHE_NONE) {
+		zrn_image_free(e->cache);
+		e->cache = nullptr;
+	}
+	e->b_cache_valid = false;
+	zrn_changed_render(e);
+}
+
+ZCacheMode Zelement_get_cache_mode(const Zid element) {
+	const zrn_element_t* const e = zrn_get(element, Z_CLASS_ELEMENT);
+	return e ? e->cache_mode : Z_CACHE_NONE;
+}
+
+void Zelement_on_holding(const Zid element, const ZRoutedCallback callback, void* const user_data) { Zelement_on(element, Z_EVENT_HOLDING, callback, user_data); }
+
+void Zelement_set_context_flyout(const Zid element, const Zid flyout) {
+	zrn_element_t* const e = zrn_get(element, Z_CLASS_ELEMENT);
+	if (!e) return;
+	if (flyout != Z_INVALID_ID && !zrn_get(flyout, Z_CLASS_FLYOUT_BASE)) return;
+	e->context_flyout = flyout;
+}
+
+Zid Zelement_get_context_flyout(const Zid element) {
+	const zrn_element_t* const e = zrn_get(element, Z_CLASS_ELEMENT);
+	return e && e->context_flyout != Z_INVALID_ID && zrn_lookup(e->context_flyout) ? e->context_flyout : Z_INVALID_ID;
 }
 SETTER(Zelement_set_clip_to_bounds, bool, b_clip_to_bounds, 0)
 

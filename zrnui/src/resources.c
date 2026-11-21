@@ -419,6 +419,7 @@ void zrn_root_resources_changed(zrn_root_t* const r) {
 	apply_tree(r->overlay);
 	for (int i = 0; i < r->popup_count; i++) apply_tree(r->popups[i]);
 	r->b_paint_dirty = true;
+	r->cache_epoch++;
 }
 
 #define BIND_FN(name, cls, prop) \

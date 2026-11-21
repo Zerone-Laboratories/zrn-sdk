@@ -69,6 +69,26 @@ extern "C" {
 	/** @brief Frees the target and its textures; the context must be current. NULL is ignored. */
 	ZRNUI_API void Zgl_target_destroy(ZGlTarget* target);
 
+	/** What the GPU renderer did since the last Zrender_take_stats: for a frame log (ZRNUI_FRAME_LOG). */
+	typedef struct ZRenderStats {
+		uint32_t draws;          /**< glDrawArrays calls */
+		uint32_t quads;          /**< quads drawn */
+		uint32_t glyph_uploads;  /**< glyph bitmaps put into the atlas */
+		uint32_t image_uploads;  /**< image textures made (glTexImage2D of pixels) */
+		uint32_t upload_kb;      /**< what the uploads above weighed, in KiB */
+		uint32_t layer_paints;   /**< bitmap caches (CacheMode) painted again */
+		uint32_t layer_draws;    /**< bitmap caches drawn */
+		float raster_ms;         /**< CPU time spent rasterizing new glyphs (FreeType) */
+		float layer_ms;          /**< time spent painting bitmap caches, their content included */
+		float alloc_ms;          /**< time spent making the textures of new bitmap caches */
+		const char* layout_by;   /**< the class of the last element that asked for a new layout, NULL when none did */
+		uint32_t backdrop_passes; /**< zrn-frosted-diffusion strips painted and blurred again (something under them changed) */
+		float backdrop_ms;       /**< CPU time of those passes, the walk that decides them included */
+	} ZRenderStats;
+
+	/** @brief Copies the counters of the renderer into `out` and sets them to zero. */
+	ZRNUI_API void Zrender_take_stats(ZRenderStats* out);
+
 #ifdef __cplusplus
 }
 #endif

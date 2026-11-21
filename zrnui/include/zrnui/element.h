@@ -64,6 +64,7 @@ typedef enum ZEvent {
 	Z_EVENT_PRIMARY_BUTTON_CLICK,   /* ContentDialog */
 	Z_EVENT_SECONDARY_BUTTON_CLICK, /* ContentDialog */
 	Z_EVENT_SECTIONS_IN_VIEW_CHANGED, /* Hub: the sections in view are others now */
+	Z_EVENT_HOLDING,                /* a press held 500 ms without moving (UIElement.Holding); the tilt and the click of that press are cancelled */
 	Z_EVENT_LAST_                   /* not an event: the end of the list */
 } ZEvent;
 
@@ -88,6 +89,26 @@ typedef enum ZAnimatedProperty {
 	Z_PROP_TRANSLATE_Y,
 	Z_PROP_LAST_         /* not a property: the end of the list */
 } ZAnimatedProperty;
+
+/**
+ * zrn-frosted-diffusion (Zelement_set_frosted_diffusion): what lies behind an element is seen through it blurred and grainy
+ * under its tint, instead of hidden or cut off at its edge.
+ */
+typedef enum ZFrostedDiffusion {
+	Z_FROSTED_DIFFUSION_NONE = 0,
+	/** frosted glass over the whole element, evenly: the blur under the tint everywhere (bars, headers, composers) */
+	Z_FROSTED_DIFFUSION_NORMAL,
+	/** strongest at the top, rising from nothing at the bottom edge (the shell's status bar: content goes soft toward the top) */
+	Z_FROSTED_DIFFUSION_ASCENDING,
+	/** strongest at the bottom, fading out toward the top edge (the shell's navigation bar) */
+	Z_FROSTED_DIFFUSION_DESCENDING
+} ZFrostedDiffusion;
+
+/** UIElement.CacheMode (Zelement_set_cache_mode). */
+typedef enum ZCacheMode {
+	Z_CACHE_NONE = 0,    /* the element and its subtree are painted every frame */
+	Z_CACHE_BITMAP       /* BitmapCache: painted once into a texture, then only moved, faded and turned until something in it changes */
+} ZCacheMode;
 
 
 #ifdef __cplusplus
@@ -233,6 +254,72 @@ extern "C" {
 	ZRNUI_API float Zeasing(ZEasing easing, float t);
 	/** @brief Tilt: while pressed the element leans toward the finger (WP's TiltEffect). On by default for list and grid items (not for FlipView), group headers, hyperlinks, check boxes, radio buttons and menu flyout items; not for Button. */
 	ZRNUI_API void Zelement_set_tilt(Zid element, bool enabled);
+	/**
+	 * @brief CacheMode = BitmapCache. With Z_CACHE_BITMAP the OpenGL renderer paints the element and its subtree once into a texture
+	 * of its size and from then on only draws that texture: moving, fading, turning or scrolling it costs one quad. The texture is
+	 * painted again when something inside changes (a property, the layout, a press, the focus), when the theme, the accent or the
+	 * scale changes, or when the size changes. Its own opacity and render transform are applied to the texture, not painted into it.
+	 * What the element draws outside its bounds is cut. The software renderer ignores it. Rows of a long list are the use.
+	 */
+	ZRNUI_API void Zelement_set_cache_mode(Zid element, ZCacheMode mode);
+	/**
+	 * @brief zrn-frosted-diffusion: what lies behind the element shows through it, blurred and grainy, under `tint` (a theme
+	 * color or brush key, followed when the theme changes) laid over the blur at 75 %. The element's own foreground (text, icons,
+	 * button circles) is painted on top unchanged, so it keeps the contrast it has on a solid bar.
+	 *
+	 * Z_FROSTED_DIFFUSION_NORMAL is even over the whole element. Z_FROSTED_DIFFUSION_ASCENDING is full at the top edge and fades
+	 * out toward the bottom one, where the content behind shows sharp; Z_FROSTED_DIFFUSION_DESCENDING the other way round. Where
+	 * nothing but the page background is behind the element, it is that background under the tint, without blur or grain, and
+	 * costs no extra pass. Z_FROSTED_DIFFUSION_NONE turns it off; at most 16 elements have it at a time.
+	 *
+	 * What is behind it is what is painted before it in the same root (the page under its app bar, a list under a header laid
+	 * over it); popups are not. On the GPU, before a frame in which something behind it moved or changed (a scroll), that is
+	 * painted again into a strip the size of the element (cached rows drawn from their textures), cut to a quarter and blurred in
+	 * one pass; the frame itself stays one render pass (nothing is read back). While nothing behind it changes the kept blur is
+	 * drawn. The software renderer fills the element with `tint`.
+	 *
+	 * The element should not paint an opaque background of its own: a CommandBar or AppBar given it leaves out its own background
+	 * and border, and a Page lays its content out under such a bar (the bar no longer takes room from it). A vertical ScrollViewer
+	 * that such an element overlaps at its top or bottom end gets that much room at that end of its content
+	 * (Zscroll_viewer_get_content_insets), so its first and last items can still be scrolled clear of it.
+	 */
+	ZRNUI_API void Zelement_set_frosted_diffusion(Zid element, ZFrostedDiffusion mode, ZThemeResource tint);
+	/** @return The frosted diffusion of the element; Z_FROSTED_DIFFUSION_NONE for none or an invalid handle. */
+	ZRNUI_API ZFrostedDiffusion Zelement_get_frosted_diffusion(Zid element);
+	/**
+	 * @brief The system-wide switch of zrn-frosted-diffusion (ztOS Settings > theme > frosted diffusion, `frost = 1|0` in
+	 * ~/.config/ztmetro/config). Off, every element with a frosted diffusion paints only its tint, opaque, as a plain
+	 * background: no strip is painted and nothing is blurred. Layout is unchanged. zrnapp windows follow the shell's config
+	 * live (inotify); an app without zrnapp may call it itself. On by default.
+	 */
+	ZRNUI_API void Zset_frosted_diffusion_enabled(bool enabled);
+	/** @return Whether zrn-frosted-diffusion is on system-wide (true by default). */
+	ZRNUI_API bool Zfrosted_diffusion_enabled(void);
+	/** @return The cache mode; Z_CACHE_NONE for an invalid handle. */
+	ZRNUI_API ZCacheMode Zelement_get_cache_mode(Zid element);
+	/**
+	 * @brief UIElement.Holding: `callback` runs when a press on the element (or on something inside it) stays 500 ms without moving
+	 * more than 9.5 pixels. The press is then cancelled: no tilt, no Click, no tap on release. The innermost element that has a Holding
+	 * handler or a context flyout gets it. Same as Zelement_on(element, Z_EVENT_HOLDING, ...); NULL removes it.
+	 */
+	ZRNUI_API void Zelement_on_holding(Zid element, ZRoutedCallback callback, void* user_data);
+	/** @brief Phases of a horizontal swipe (Zelement_on_swipe). */
+	typedef enum ZSwipePhase { Z_SWIPE_STARTED, Z_SWIPE_DELTA, Z_SWIPE_COMPLETED } ZSwipePhase;
+	/** A swipe: `dx` is how far the finger is from where it went down, sideways (positive to the right). */
+	typedef void (*ZSwipeCallback)(Zid element, ZSwipePhase phase, float dx, void* user_data);
+	/**
+	 * @brief A horizontal swipe on the element (or on anything inside it): once the finger has gone 14 px sideways, and more
+	 * sideways than along the other axis, the element takes the pointer (no tilt, no Holding, no Click, no scroll) and reports
+	 * STARTED, then DELTA for each move, then COMPLETED on the lift. A press that never goes sideways is untouched. NULL removes it.
+	 */
+	ZRNUI_API void Zelement_on_swipe(Zid element, ZSwipeCallback callback, void* user_data);
+	/**
+	 * @brief FrameworkElement.ContextFlyout: a flyout (MenuFlyout, Flyout) shown at the element with Zflyout_base_show_at when it is
+	 * held, after its Holding handler. Z_INVALID_ID removes it. The flyout is not owned: the program keeps and destroys it.
+	 */
+	ZRNUI_API void Zelement_set_context_flyout(Zid element, Zid flyout);
+	/** @return The context flyout; Z_INVALID_ID when there is none. */
+	ZRNUI_API Zid Zelement_get_context_flyout(Zid element);
 	/** @return Opacity as set or animated; 0 for an invalid handle. */
 	ZRNUI_API float Zelement_get_opacity(Zid element);
 

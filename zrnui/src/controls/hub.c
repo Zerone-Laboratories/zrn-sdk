@@ -439,7 +439,7 @@ static ZSize hub_arrange(zrn_element_t* const e, const ZSize final) {
 		h->view_count = count;
 		h->b_view_dirty = false;
 		h->b_view_event_pending = true;
-		e->b_wants_tick = true;
+		zrn_want_tick(e);
 		return final;
 	}
 	h->view_first = first;

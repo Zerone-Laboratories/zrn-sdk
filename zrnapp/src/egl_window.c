@@ -42,7 +42,10 @@ static bool choose_config(zrnapp_gl_t* const gl) {
 		EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE
 	};
 	EGLint n = 0;
-	if (eglChooseConfig(gl->display, multisampled, &gl->config, 1, &n) && n > 0) return true;
+	/* ZRNAPP_MSAA=0: a plain config (to measure what the multisampling costs the GPU) */
+	const char* const msaa = getenv("ZRNAPP_MSAA");
+	const bool b_msaa = !msaa || *msaa != '0';
+	if (b_msaa && eglChooseConfig(gl->display, multisampled, &gl->config, 1, &n) && n > 0) return true;
 	Z_DEBUG_LOG("no 4x MSAA config: the edges are not anti-aliased\n");
 	if (eglChooseConfig(gl->display, plain, &gl->config, 1, &n) && n > 0) return true;
 	report("no usable EGL config");
@@ -130,8 +133,12 @@ void zrnapp_gl_resize(zrnapp_gl_t* const gl, const int width, const int height) 
 	gl->height = height;
 }
 
-void zrnapp_gl_present(zrnapp_gl_t* const gl, const Zid root, const int width, const int height) {
+bool zrnapp_gl_paint(zrnapp_gl_t* const gl, const Zid root, const int width, const int height) {
 	if (width != gl->width || height != gl->height) zrnapp_gl_resize(gl, width, height);
 	/* nothing painted: the back buffer holds nothing new (its content is undefined after a swap), so there is nothing to show */
-	if (Zgl_target_paint(root, gl->target, width, height)) eglSwapBuffers(gl->display, gl->surface);
+	return Zgl_target_paint(root, gl->target, width, height);
+}
+
+void zrnapp_gl_swap(zrnapp_gl_t* const gl) {
+	eglSwapBuffers(gl->display, gl->surface);
 }

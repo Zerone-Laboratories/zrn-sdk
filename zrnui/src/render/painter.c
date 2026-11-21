@@ -79,7 +79,29 @@ void zrn_clip_pop(zrn_painter_t* const p) {
 }
 
 int zrn_clip_out(const zrn_painter_t* const p, const ZRect r) {
-	if (p->b_has_xf) return 0;
+	if (p->b_has_xf) {
+		/* under a transform (a turnstile, a tilt) the box is taken through the matrix: without this cull every row of a long
+		 * list is painted, and every cached row made into a texture, while a page turns (hundreds of them, the GPU out of memory) */
+		const float* const m = p->xf;
+		const float xs[2] = { to_dev_x(p, r.x), to_dev_x(p, r.x + r.width) };
+		const float ys[2] = { to_dev_y(p, r.y), to_dev_y(p, r.y + r.height) };
+		float lx = 0, ly = 0, hx = 0, hy = 0;
+		for (int i = 0; i < 4; i++) {
+			const float x = xs[i & 1], y = ys[i >> 1];
+			const float w = m[3] * x + m[7] * y + m[15];
+			/* a corner behind the eye: the box is not culled */
+			if (w < 0.01f) return 0;
+			const float sx = (m[0] * x + m[4] * y + m[12]) / w, sy = (m[1] * x + m[5] * y + m[13]) / w;
+			if (i == 0 || sx < lx) lx = sx;
+			if (i == 0 || sy < ly) ly = sy;
+			if (i == 0 || sx > hx) hx = sx;
+			if (i == 0 || sy > hy) hy = sy;
+		}
+		/* the clip of the transformed element is not pushed (zrn_clip_push): the one in place is that of the surface or a parent.
+		 * The backend's perspective is not in p->xf and can draw a far box nearer the middle: half the clip more on each side. */
+		const float mx = (float)(p->clip[2] - p->clip[0]) * 0.5f, my = (float)(p->clip[3] - p->clip[1]) * 0.5f;
+		return hx <= (float)p->clip[0] - mx || hy <= (float)p->clip[1] - my || lx >= (float)p->clip[2] + mx || ly >= (float)p->clip[3] + my;
+	}
 	const float x0 = to_dev_x(p, r.x), y0 = to_dev_y(p, r.y);
 	const float x1 = to_dev_x(p, r.x + r.width), y1 = to_dev_y(p, r.y + r.height);
 	return x1 <= (float)p->clip[0] || y1 <= (float)p->clip[1] || x0 >= (float)p->clip[2] || y0 >= (float)p->clip[3];

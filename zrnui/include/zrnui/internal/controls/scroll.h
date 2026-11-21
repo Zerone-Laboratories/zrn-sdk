@@ -31,11 +31,29 @@ typedef struct zrn_scroll_viewer {
 	float velocity_x, velocity_y;
 	/** The previous pointer position, for the velocity. */
 	float last_move_x, last_move_y;
+	/** The last moves of the finger (ms on the monotonic clock, position): the speed at release is measured over the
+	 * last ~100 ms of them, so a finger that stopped before lifting does not fling. A ring of ZRN_SV_SAMPLES. */
+	double sample_t[8];
+	float sample_x[8], sample_y[8];
+	int sample_count, sample_next;
 	/** Room added to the extent along x, for a content that goes round (the looping hub). */
 	double extra_extent_x;
+	/** Zscroll_viewer_set_anchor: the element whose place on screen is kept; where it was in the content and how tall the viewport was at the last arrange. */
+	Zid anchor;
+	bool b_anchor_known;
+	double anchor_y, anchor_viewport_h;
 	/** Called with the offset along the scrolling axis; on_scroll_data is its user data. */
 	ZScrollCallback on_scroll;
 	void* on_scroll_data;
+	/** WP overscroll: how far past an end the content is pulled (logical px; < 0 past the top, > 0 past the bottom), what
+	 * the finger has pulled past it, and the speed of the spring that brings it back. Shown as the content squeezed toward
+	 * the far end of the viewport. */
+	float over_y, over_pull, over_v;
+	/** The room left before and after the content for elements with a backdrop effect laid over its ends (zrn_backdrop_insets). */
+	float inset_top, inset_bottom;
+	/** A finger is down (from the preview of its press to its lift): only then can a move be a drag. Pointer moves come
+	 * before a press too (the shell sends where the finger is first), and from a stale start they read as a long drag. */
+	bool b_pressed;
 } zrn_scroll_viewer_t;
 
 /** Moves the horizontal offset by delta with no event, the inertia and a drag in progress going on as if nothing happened. It does not clamp the offset or ask for a layout. */

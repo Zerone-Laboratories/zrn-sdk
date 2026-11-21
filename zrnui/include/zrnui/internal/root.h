@@ -6,6 +6,7 @@
 #pragma once
 
 #include "zrnui/element.h"
+#include "zrnui/host.h"
 #include "zrnui/internal/theme.h"
 #include "zrnui/internal/input.h"
 
@@ -28,6 +29,8 @@ struct zrn_root {
 	/** The theme we are leaving, the one we are going to, and the progress between them. */
 	zrn_theme_t theme_from, theme_target;
 	bool b_theme_transitioning;
+	/** Something moved in the last Zroot_tick (a tween, a transition, inertia, a ticking control) or a finger holds the capture: Zroot_is_animating. */
+	bool b_animating;
 	float theme_t;
 	/** The root of the element tree, owned by the root (destroyed with it or when replaced). */
 	zrn_element_t* visual;
@@ -74,10 +77,37 @@ struct zrn_root {
 	float tilt_fx, tilt_fy, tilt_amount, tilt_target;
 	/** The off-screen GPU context of Zroot_render, made when it is first asked for. */
 	struct zrn_gl* gpu;
+	/**
+	 * Holding: the element that gets it when the press that started at (hold_x, hold_y) stays put; hold_ms is how long it has. b_hold_armed
+	 * until it fires, moves or lifts; b_hold_fired from the firing to the lift, which is then swallowed.
+	 */
+	Zid hold_target;
+	float hold_x, hold_y, hold_ms;
+	bool b_hold_armed, b_hold_fired;
+	/** Zroot_set_input_pane_height: the height (window logical px) the on-screen keyboard covers at the bottom; the tree is arranged above it. */
+	float input_pane;
+	/** Zroot_on_back: the program's own step of back. */
+	ZBackCallback back_callback;
+	void* back_user_data;
+	/** Zroot_on_theme_changed: called after the theme or the accent changed. */
+	ZRoutedCallback theme_changed;
+	void* theme_changed_data;
+	/** Bumped when everything painted may look different (theme, accent, resources): a cached bitmap of another epoch is painted again. */
+	uint32_t cache_epoch;
+	/** The settle frame: once nothing has changed for a moment after frames were painted, the frame is painted once more
+	 * with every bitmap cache made again (cache_epoch). On the S9 the GPU now and then faults in a job (panfrost:
+	 * DATA_INVALID_FAULT, JOB_BUS_FAULT, INSTR_INVALID_ENC in dmesg, in every GL client: the shell, Waydroid, this app)
+	 * and what that job drew comes out as triangles smeared across a row; a cached row kept it until it changed, the last
+	 * frame of a page until the next touch. Armed by a painted frame, not by the settle frame itself. */
+	bool b_settle_armed, b_settle_frame;
+	float settle_quiet_ms;
 	/** The overrides of ThemeResource keys the application set (resources.c). */
 	struct zrn_res_override* overrides;
 	int override_count, override_cap;
 };
+
+/** How many times a cached subtree (CacheMode) has been painted into its texture, for all roots: the tests count with it. */
+extern uint32_t zrn_cache_paints;
 
 /** The root of a handle; NULL when it is invalid or an element. Reports nothing. */
 zrn_root_t* zrn_root_lookup(Zid id);

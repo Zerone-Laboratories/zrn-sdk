@@ -15,13 +15,19 @@
 #include "zrnui/internal/text.h"
 #include "zrnui/internal/xform.h"
 #include "zrnui/internal/anim.h"
+#include "zrnui/internal/swipe.h"
 #include "zrnui/internal/render/painter.h"
 #include "zrnui/internal/render/gles.h"
+#include "zrnui/internal/render/backend.h"
+#include "zrnui/internal/image.h"
 #include "zrnui/internal/controls/popup.h"
 #include "zrnui/internal/controls/appbar.h"
 
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <math.h>
 
 zrn_root_t* zrn_root_lookup(const Zid id) { return zrn_handle_get(id, 1); }
@@ -75,7 +81,13 @@ void zrn_element_forget(zrn_element_t* const e) {
 	if (r->focus == e) r->focus = nullptr;
 	if (r->capture == e) r->capture = nullptr;
 	if (r->hover == e) r->hover = nullptr;
-	if (r->tilt_element == e) r->tilt_element = nullptr;
+	if (r->tilt_element == e) {
+		/* a pressed row that leaves the tree (its page goes, a cached page is put aside) does not stay leaning */
+		e->rot_x = e->rot_y = 0;
+		e->render_scale = 1;
+		zrn_update_transformed(e);
+		r->tilt_element = nullptr;
+	}
 	if (r->tooltip_target == e) r->tooltip_target = nullptr;
 	if (r->visual == e) r->visual = nullptr;
 	if (r->open_bar == e) r->open_bar = nullptr;
@@ -104,6 +116,9 @@ void zrn_set_focus(zrn_root_t* r, zrn_element_t* e) {
 	zrn_input_t in;
 	if (old == e) return;
 	memset(&in, 0, sizeof in);
+	/* the focus is drawn: the cached bitmaps around the old and the new one are stale */
+	zrn_cache_stale(old);
+	zrn_cache_stale(e);
 	r->focus = e;
 	r->b_paint_dirty = true;
 	{
@@ -299,9 +314,40 @@ void Zroot_set_density(const Zid root, const float density) {
 	r->b_paint_dirty = true;
 }
 
+/* The theme or the accent changed: what is cached was painted in the old one, and the app may keep resources of its own. */
+static void theme_changed(zrn_root_t* const r) {
+	const Zid id = r->id;
+	r->cache_epoch++;
+	if (r->theme_changed) r->theme_changed(id, r->theme_changed_data);
+}
+
+void Zroot_on_theme_changed(const Zid root, const ZRoutedCallback callback, void* const user_data) {
+	zrn_root_t* const r = get_root(root);
+	if (!r) return;
+	r->theme_changed = callback;
+	r->theme_changed_data = user_data;
+}
+
+void Zroot_set_input_pane_height(const Zid root, const float height) {
+	zrn_root_t* const r = get_root(root);
+	if (!r || height != height) return;
+	const float h = height > 0 ? height : 0;
+	if (h == r->input_pane) return;
+	r->input_pane = h;
+	r->b_layout_dirty = r->b_paint_dirty = true;
+	if (r->visual) zrn_changed_layout(r->visual);
+}
+
+float Zroot_get_input_pane_height(const Zid root) {
+	const zrn_root_t* const r = get_root(root);
+	return r ? r->input_pane : 0;
+}
+
 void Zroot_set_theme(const Zid root, const ZTheme theme) {
 	zrn_root_t* const r = get_root(root);
 	if (!r) return;
+	const ZTheme going_to = r->b_theme_transitioning ? r->theme_target.theme : r->theme.theme;
+	if (going_to == theme) return;
 	ZColor bg = r->theme.background;
 	bool b_has = r->theme.b_has_background;
 	if (!zrn_animations_enabled(r)) {
@@ -313,6 +359,7 @@ void Zroot_set_theme(const Zid root, const ZTheme theme) {
 		r->theme_t = 0;
 		r->b_paint_dirty = true;
 		zrn_root_resources_changed(r);
+		theme_changed(r);
 		return;
 	}
 	r->theme_from = r->theme;
@@ -322,6 +369,7 @@ void Zroot_set_theme(const Zid root, const ZTheme theme) {
 	r->theme_t = 0;
 	r->b_paint_dirty = true;
 	zrn_root_resources_changed(r);
+	theme_changed(r);
 }
 
 ZTheme Zroot_get_theme(const Zid root) {
@@ -332,10 +380,16 @@ ZTheme Zroot_get_theme(const Zid root) {
 void Zroot_set_accent_color(const Zid root, const ZColor color) {
 	zrn_root_t* const r = get_root(root);
 	if (!r) return;
+	const ZColor was = r->theme.accent;
+	if (was.r == color.r && was.g == color.g && was.b == color.b && was.a == color.a) return;
 	r->theme.accent = color;
 	r->theme.colors[ZRN_TC_ACCENT] = color;
+	/* a cross-fade in progress ends in the new accent too */
+	r->theme_target.accent = color;
+	r->theme_target.colors[ZRN_TC_ACCENT] = color;
 	r->b_paint_dirty = true;
 	zrn_root_resources_changed(r);
+	theme_changed(r);
 }
 
 void Zroot_set_accent(const Zid root, const ZAccent accent) { Zroot_set_accent_color(root, zrn_accent_color(accent)); }
@@ -403,7 +457,7 @@ void Zroot_update_layout(const Zid root) {
 	/* the layout grid is the window divided by the scale: at 720 x 1280 and a scale of 1.5
 	 * the page is laid out in the phone grid of 480 x 800, the painter draws it x 1.5 */
 	lw = (float)r->width / r->ui;
-	lh = (float)r->height / r->ui;
+	lh = zrn_maxf(0, ((float)r->height - r->input_pane) / r->ui);
 	/* a pass can change what the next one needs (scroll bars appear): up to a few */
 	for (pass = 0; pass < 4; pass++) {
 		r->b_layout_dirty = false;
@@ -421,18 +475,335 @@ void Zroot_update_layout(const Zid root) {
  *  painting
  * ============================================================================ */
 
+/* What an element paints at the painter's origin: itself, its children, what goes over them, inside its clip. */
+/* ============================================================================
+ *  zrn-frosted-diffusion (Zelement_set_frosted_diffusion)
+ * ============================================================================ */
+
+/* the effect's state of one element: its strip and blur (GPU), what was under it when they were made (sig) and whether
+ * anything but the background was, and where it was in the root the last frame (logical) */
+struct zrn_backdrop {
+	uint32_t sig;
+	bool b_valid, b_hit;
+	ZRect at;
+	/** its region of the shared strip and blur (texture pixels, y down from the top of the strip) */
+	int rx, ry, rw, rh;
+};
+
+/* the strips of all the frosted elements, one above the other with a gap, painted in one pass and blurred in one: two small
+ * render passes a frame however many there are (three in a chat), not two each */
+/* the device rectangles of this frame's opaque frosted elements (NORMAL, fully opaque, not turned): a scrolled row wholly
+ * behind one is not painted in the frame (it is in the strip), so a list running under a header, a composer and an app bar
+ * costs no more than one cut at them */
+static float g_bd_cover[16][4];
+static int g_bd_cover_count;
+/* how many ScrollViewers the painting is inside: only their content is culled behind a frosted element */
+static int g_in_scroll;
+/* how many bitmap caches are being painted into: their coordinates are the bitmap's, not the screen's, so nothing in them is
+ * culled against the frosted elements (text was left out of rows near the top of a chat) */
+static int g_in_layer;
+static zrn_image_t* g_bd_strip;
+static zrn_image_t* g_bd_blur;
+static constexpr int BD_GAP = 8;
+
+static constexpr int BD_MAX = 16;
+/* the tint over the blur: enough that what the element draws on it reads as on a solid bar */
+static constexpr float BD_VEIL = 0.75f;
+static Zid g_backdrops[BD_MAX];
+static int g_backdrop_count;
+/* while the strip of a backdrop is painted: the element it is for, where painting stops (it and what is over it are not under it) */
+static bool g_bd_pass, g_bd_stopped;
+static const zrn_element_t* g_bd_stop;
+
+void zrn_backdrop_free(zrn_element_t* const e) {
+	for (int i = 0; i < g_backdrop_count; i++) {
+		if (g_backdrops[i] == e->id) {
+			g_backdrops[i] = g_backdrops[--g_backdrop_count];
+			break;
+		}
+	}
+	if (!e->backdrop_state) return;
+	free(e->backdrop_state);
+	e->backdrop_state = nullptr;
+}
+
+void Zelement_set_frosted_diffusion(const Zid element, const ZFrostedDiffusion effect, const ZThemeResource tint) {
+	zrn_element_t* const e = zrn_get(element, Z_CLASS_ELEMENT);
+	if (!e) return;
+	if (effect < Z_FROSTED_DIFFUSION_NONE || effect > Z_FROSTED_DIFFUSION_DESCENDING) {
+		zrn_error(Z_ERROR_INVALID_ARGUMENT, "unknown frosted diffusion %d", (int)effect);
+		return;
+	}
+	if (effect == Z_FROSTED_DIFFUSION_NONE) {
+		zrn_backdrop_free(e);
+	} else if (!e->backdrop) {
+		if (g_backdrop_count >= BD_MAX) {
+			zrn_error(Z_ERROR_INVALID_ARGUMENT, "zrn-frosted-diffusion: at most %d elements have a backdrop effect", BD_MAX);
+			return;
+		}
+		g_backdrops[g_backdrop_count++] = e->id;
+	}
+	e->backdrop = (uint8_t)effect;
+	e->backdrop_tint = (int)tint;
+	/* a page gives such a bar no room, a list overlapped by it gets room at its end, the bar paints no background */
+	zrn_changed_layout(e);
+}
+
+ZFrostedDiffusion Zelement_get_frosted_diffusion(const Zid element) {
+	const zrn_element_t* const e = zrn_get(element, Z_CLASS_ELEMENT);
+	return e ? (ZFrostedDiffusion)e->backdrop : Z_FROSTED_DIFFUSION_NONE;
+}
+
+/* the system-wide switch (the shell's `frost` key): off, backdrops are their tint alone, with no strip and no blur */
+static bool g_frost_enabled = true;
+
+void Zset_frosted_diffusion_enabled(const bool enabled) {
+	if (g_frost_enabled == enabled) return;
+	g_frost_enabled = enabled;
+	g_bd_cover_count = 0;
+	for (int i = 0; i < g_backdrop_count; i++) {
+		zrn_element_t* const b = zrn_lookup(g_backdrops[i]);
+		if (!b) continue;
+		if (b->backdrop_state) b->backdrop_state->b_valid = false;
+		if (b->root) b->root->b_paint_dirty = true;
+	}
+}
+
+bool Zfrosted_diffusion_enabled(void) { return g_frost_enabled; }
+
+static bool bd_shown(const zrn_element_t* e) {
+	for (; e; e = e->parent) if (e->visibility != Z_VISIBLE || e->opacity <= 0.003f) return false;
+	return true;
+}
+
+static ZRect bd_rect(const zrn_element_t* const e) {
+	const ZPoint o = zrn_to_root(e, (ZPoint){ .x = 0, .y = 0 });
+	return zrn_rect(o.x, o.y, e->rect.width, e->rect.height);
+}
+
+static bool bd_inside(const zrn_element_t* e, const zrn_element_t* const ancestor) {
+	for (; e; e = e->parent) if (e == ancestor) return true;
+	return false;
+}
+
+void zrn_backdrop_insets(zrn_element_t* const sv, float* const top, float* const bottom) {
+	*top = *bottom = 0;
+	if (!g_backdrop_count || !sv->root) return;
+	const ZRect s = bd_rect(sv);
+	const float sy0 = s.y, sy1 = s.y + s.height;
+	/* a bar laid over the end, then what is laid over the end of that (a composer over an app bar) */
+	for (int pass = 0; pass < 4; pass++) {
+		bool b_grew = false;
+		for (int i = 0; i < g_backdrop_count; i++) {
+			const zrn_element_t* const b = zrn_lookup(g_backdrops[i]);
+			if (!b || b->root != sv->root || bd_inside(b, sv) || !bd_shown(b)) continue;
+			const ZRect r = bd_rect(b);
+			if (r.width <= 0 || r.height <= 0 || r.x >= s.x + s.width || r.x + r.width <= s.x) continue;
+			const float by0 = r.y, by1 = r.y + r.height;
+			/* an element in the lower half of the viewer is over its bottom end, else over its top */
+			if (by0 + by1 > sy0 + sy1) {
+				const float end = sy1 - *bottom;
+				if (by0 < end && by1 >= end - 0.5f && by1 <= sy1 + 0.5f && sy1 - by0 > *bottom + 0.25f) { *bottom = sy1 - by0; b_grew = true; }
+			} else {
+				const float end = sy0 + *top;
+				if (by1 > end && by0 <= end + 0.5f && by0 >= sy0 - 0.5f && by1 - sy0 > *top + 0.25f) { *top = by1 - sy0; b_grew = true; }
+			}
+		}
+		if (!b_grew) break;
+	}
+	*top = zrn_minf(*top, s.height * 0.5f);
+	*bottom = zrn_minf(*bottom, s.height * 0.5f);
+}
+
+/* What lies under a backdrop, known without painting it: the leaves (and the rows with a bitmap cache) that reach into its
+ * strip, by where they are, how opaque, turned and how often they changed (paint_gen). hit: one of them does. */
+typedef struct bd_walk {
+	const zrn_element_t* stop;
+	bool b_stopped, b_hit;
+	uint32_t sig;
+	float scale;
+} bd_walk_t;
+
+static void bd_mix(bd_walk_t* const w, const void* const data, const size_t n) {
+	const uint8_t* const b = (const uint8_t*)data;
+	for (size_t i = 0; i < n; i++) w->sig = (w->sig ^ b[i]) * 16777619u;
+}
+
+static void bd_walk(bd_walk_t* const w, zrn_element_t* const e, const float ox, const float oy, float alpha, const float clip_in[4]) {
+	if (w->b_stopped) return;
+	if (e == w->stop) {
+		w->b_stopped = true;
+		return;
+	}
+	if (e->visibility != Z_VISIBLE || e->b_is_popup_child) return;
+	alpha *= e->opacity;
+	if (alpha <= 0.003f) return;
+	const float x = ox + e->rect.x * w->scale, y = oy + e->rect.y * w->scale;
+	const float x1 = x + e->rect.width * w->scale, y1 = y + e->rect.height * w->scale;
+	float clip[4] = { clip_in[0], clip_in[1], clip_in[2], clip_in[3] };
+	if (e->b_clip_to_bounds) {
+		clip[0] = zrn_maxf(clip[0], x);
+		clip[1] = zrn_maxf(clip[1], y);
+		clip[2] = zrn_minf(clip[2], x1);
+		clip[3] = zrn_minf(clip[3], y1);
+	}
+	if (clip[2] <= clip[0] || clip[3] <= clip[1]) return;
+	const bool b_in = x < clip[2] && x1 > clip[0] && y < clip[3] && y1 > clip[1];
+	if (e->b_transformed) {
+		/* a turn or a slide: where its content lands is not followed here, so it counts as under and as changed */
+		const float xf[6] = { e->translate_x, e->translate_y, e->render_scale, e->scale_y, e->rot_x, e->rot_y };
+		bd_mix(w, xf, sizeof xf);
+		w->b_hit = true;
+	}
+	const bool b_leaf = e->child_count == 0 || e->cache_mode == Z_CACHE_BITMAP;
+	if (b_in && (e->cls->paint || e->cache_mode == Z_CACHE_BITMAP)) {
+		const float k[6] = { x, y, x1, y1, alpha, (float)e->paint_gen };
+		bd_mix(w, &e->id, sizeof e->id);
+		bd_mix(w, k, sizeof k);
+		/* a container's own background (a page's) is the background, not something on it */
+		if (b_leaf) w->b_hit = true;
+	}
+	if (b_leaf && (e->cache_mode == Z_CACHE_BITMAP || e->child_count == 0)) return;
+	int count, heap;
+	zrn_element_t** const list = zrn_ordered(e, &count, &heap);
+	for (int i = 0; i < count && !w->b_stopped; i++) bd_walk(w, list[i], x, y, alpha, clip);
+	zrn_ordered_free(list, heap);
+}
+
+static ZColor bd_under(const zrn_root_t* const r) { return r->theme.b_has_background ? r->theme.background : r->theme.colors[ZRN_TC_BACKGROUND]; }
+
+/* Before the frame: each backdrop of the root whose underside changed gets its strip painted (the root's tree up to the
+ * element, in the frame's own way, cached rows drawn from their textures) and blurred; one that has only the background under
+ * it gets nothing. Before the frame's first draw, so the frame stays one render pass on a tiler (no read back, no split). */
+static void backdrops_prepare(zrn_root_t* const r, zrn_painter_t* const p);
+
+static void paint_content(zrn_element_t* const e, zrn_painter_t* const p, zrn_root_t* const r) {
+	int count, heap;
+	if (e->b_clip_to_bounds) zrn_push_clip(p, zrn_local_rect(e));
+	if (e->cls->paint) e->cls->paint(e, p);
+	const bool b_scroll = e->cls->id == Z_CLASS_SCROLL_VIEWER;
+	g_in_scroll += b_scroll;
+	zrn_element_t** list = zrn_ordered(e, &count, &heap);
+	for (int i = 0; i < count; i++) if (!list[i]->b_is_popup_child) zrn_paint_element(list[i], p, r);
+	g_in_scroll -= b_scroll;
+	zrn_ordered_free(list, heap);
+	if (e->cls->paint_over && !(g_bd_pass && g_bd_stopped)) e->cls->paint_over(e, p);
+	if (e->b_clip_to_bounds) zrn_pop_clip(p);
+}
+
+uint32_t zrn_cache_paints;
+uint32_t zrn_upload_kb_this_frame;
+bool zrn_upload_deferred;
+extern ZRenderStats zrn_render_stats;
+
+/* New bitmaps made in one frame at most: a list that fills at once (the chats arriving at launch: fifteen rows, 95 ms in one
+ * frame) paints the rest directly and caches them over the next frames. */
+static constexpr int ZRN_CACHE_NEW_PER_FRAME = 3;
+static int g_cache_new_this_frame;
+static bool g_cache_deferred;
+
+/* The largest side of a cached bitmap in device pixels: a bigger element is painted directly. */
+static constexpr int ZRN_CACHE_MAX_SIDE = 2048;
+
+/* CacheMode = BitmapCache: the subtree is painted into its texture when that is stale, then the texture is drawn. false when the
+ * renderer has no layers or the element is too big: it is then painted directly. */
+static bool paint_cached(zrn_element_t* const e, zrn_painter_t* const p, zrn_root_t* const r) {
+	if (!p->be->layer_begin || !r) return false;
+	const int w = (int)ceilf(e->rect.width * p->scale - 0.01f);
+	const int h = (int)ceilf(e->rect.height * p->scale - 0.01f);
+	if (w <= 0 || h <= 0) return true;
+	if (w > ZRN_CACHE_MAX_SIDE || h > ZRN_CACHE_MAX_SIDE) return false;
+	const zrn_image_t* const have = e->cache;
+	const bool b_fresh = have && e->b_cache_valid && have->gl_owner == p->backend_data && have->width == w && have->height == h &&
+		e->cache_scale == p->scale && e->cache_epoch == r->cache_epoch && (!p->be->layer_drawable || p->be->layer_drawable(p, have));
+	/* a strip under a backdrop (a quarter of the frame's resolution) makes no bitmap: one made for the frame is drawn into it
+	 * scaled down (gl_draw_layer), what has none yet is painted directly */
+	if (g_bd_pass) {
+		if (!(have && e->b_cache_valid && have->gl_owner == p->backend_data && e->cache_epoch == r->cache_epoch)) return false;
+		p->be->draw_layer(p, have);
+		return true;
+	}
+	if (!b_fresh && g_cache_new_this_frame >= ZRN_CACHE_NEW_PER_FRAME) {
+		g_cache_deferred = true;
+		return false;
+	}
+	if (!b_fresh) {
+		g_cache_new_this_frame++;
+		alignas(max_align_t) uint8_t saved[ZRN_LAYER_SAVE];
+		if (!p->be->layer_begin(p, &e->cache, w, h, saved)) return false;
+		/* marked fresh before painting: a paint hook that asks for another frame (zrn_changed_paint) makes it stale again */
+		e->b_cache_valid = true;
+		e->paint_gen++;
+		e->cache_scale = p->scale;
+		e->cache_epoch = r->cache_epoch;
+		zrn_cache_paints++;
+		static int b_layer_log = -1;
+		if (b_layer_log < 0) b_layer_log = getenv("ZRNUI_LAYER_LOG") != nullptr;
+		if (b_layer_log) fprintf(stderr, "zrnui-layer %s %dx%d at %.0f,%.0f depth-xf=%d\n", e->cls->name, w, h, p->tx, p->ty, (int)p->b_has_xf);
+		struct timespec t0, t1;
+		clock_gettime(CLOCK_MONOTONIC, &t0);
+		const bool b_upload_was_deferred = zrn_upload_deferred;
+		zrn_upload_deferred = false;
+		g_in_layer++;
+		paint_content(e, p, r);
+		g_in_layer--;
+		/* a picture in it waits for its upload: the bitmap is made again next frame, with it */
+		if (zrn_upload_deferred) e->b_cache_valid = false;
+		zrn_upload_deferred = zrn_upload_deferred || b_upload_was_deferred;
+		p->be->layer_end(p, saved);
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		zrn_render_stats.layer_ms += (float)((double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6);
+	}
+	p->be->draw_layer(p, e->cache);
+	return true;
+}
+
 void zrn_paint_element(zrn_element_t* const e, zrn_painter_t* const p, zrn_root_t* const r) {
 	float tx = p->tx, ty = p->ty, alpha = p->alpha;
 	float saved_xf[16] = {};
-	int saved_has_xf = p->b_has_xf, count, heap, i;
+	const int saved_has_xf = p->b_has_xf;
+	if (g_bd_pass) {
+		if (g_bd_stopped) return;
+		if (e == g_bd_stop) {
+			g_bd_stopped = true;
+			return;
+		}
+	}
 	if (e->visibility != Z_VISIBLE) return;
 	/* an element is skipped when it is out of view, unless it holds things that may be in view: a zero-sized Canvas whose children overflow */
-	if (zrn_clipped_out(p, e->rect) && (e->b_clip_to_bounds || e->child_count == 0)) return;
+	/* a bitmap cache holds only its own box: out of view it has nothing to show, and painting it would make a layer for
+	 * every row of a long list (sixty textures in the first frame of a chat) */
+	if (zrn_clipped_out(p, e->rect) && (e->b_clip_to_bounds || e->child_count == 0 || e->cache_mode == Z_CACHE_BITMAP)) {
+		/* out of view a bitmap cache gives its texture back: kept, every row a long list ever showed would hold one (a few MiB
+		 * each at the phone's scale), and the GPU runs out of memory. Back in view the row is painted into a new one once. */
+		if (e->cache_mode == Z_CACHE_BITMAP && e->cache && !g_bd_pass) {
+			zrn_image_free(e->cache);
+			e->cache = nullptr;
+			e->b_cache_valid = false;
+		}
+		return;
+	}
+	if (g_bd_cover_count && g_in_scroll && !g_in_layer && !g_bd_pass && !p->b_has_xf && !e->b_transformed && (e->child_count == 0 || e->cache_mode == Z_CACHE_BITMAP)) {
+		const float x0 = p->tx + e->rect.x * p->scale, y0 = p->ty + e->rect.y * p->scale;
+		const float x1 = x0 + e->rect.width * p->scale, y1 = y0 + e->rect.height * p->scale;
+		for (int i = 0; i < g_bd_cover_count; i++) {
+			const float* const c = g_bd_cover[i];
+			if (x0 >= c[0] - 0.5f && y0 >= c[1] - 0.5f && x1 <= c[2] + 0.5f && y1 <= c[3] + 0.5f) return;
+		}
+	}
 	p->tx += e->rect.x * p->scale;
 	p->ty += e->rect.y * p->scale;
 	p->alpha *= e->opacity;
 	/* read once: the transform is pushed and popped as a pair, whatever the paint handlers do to the element */
 	const bool b_is_transformed = e->b_transformed;
+	/* ZRNUI_XF_LOG: the elements still turned, scaled or moved when the frame is painted at rest (the settle frame) */
+	if (b_is_transformed && r && r->b_settle_frame) {
+		static int b_xf_log = -1;
+		if (b_xf_log < 0) b_xf_log = getenv("ZRNUI_XF_LOG") != nullptr;
+		if (b_xf_log) fprintf(stderr, "zrnui-xf-at-rest %s id=%u rect=%.0f,%.0f %.0fx%.0f rx=%.2f ry=%.2f s=%.3f tx=%.1f ty=%.1f c=%.2f,%.2f\n",
+			e->cls->name, e->id, e->rect.x, e->rect.y, e->rect.width, e->rect.height, e->rot_x, e->rot_y, e->render_scale,
+			e->translate_x, e->translate_y, e->proj_cx, e->proj_cy);
+	}
 	if (b_is_transformed) {
 		/* the transform of this element, about its centre of projection, under the one of its parent */
 		float own[16];
@@ -442,13 +813,28 @@ void zrn_paint_element(zrn_element_t* const e, zrn_painter_t* const p, zrn_root_
 		p->b_has_xf = 1;
 		p->be->set_transform(p, p->xf);
 	}
-	if (e->b_clip_to_bounds) zrn_push_clip(p, zrn_local_rect(e));
-	if (e->cls->paint) e->cls->paint(e, p);
-	zrn_element_t** list = zrn_ordered(e, &count, &heap);
-	for (i = 0; i < count; i++) if (!list[i]->b_is_popup_child) zrn_paint_element(list[i], p, r);
-	zrn_ordered_free(list, heap);
-	if (e->cls->paint_over) e->cls->paint_over(e, p);
-	if (e->b_clip_to_bounds) zrn_pop_clip(p);
+	/* a cached row is drawn from its bitmap under a transform too (a turnstile, a tilt, a list sliding): the panfrost job
+	 * faults that once smeared rows made under one are fixed in the kernel */
+	if (e->backdrop && !g_bd_pass && r) {
+		const struct zrn_backdrop* const st = e->backdrop_state;
+		ZColor tint;
+		if (!zrn_res_color(r, (ZThemeResource)e->backdrop_tint, &tint)) tint = r->theme.colors[ZRN_TC_CHROME];
+		const ZRect area = zrn_rect(0, 0, e->rect.width, e->rect.height);
+		const bool b_blur = st && st->b_hit && st->b_valid && g_bd_blur;
+		/* its region of the blur, in texture coordinates (v up): the element is the top left of it */
+		float uv[4] = { 0, 0, 1, 1 };
+		if (b_blur) {
+			const float tw = (float)g_bd_blur->width, th = (float)g_bd_blur->height, q = p->scale * 0.25f;
+			uv[0] = (float)st->rx / tw;
+			uv[1] = 1.0f - (float)st->ry / th;
+			uv[2] = e->rect.width * q / tw;
+			uv[3] = e->rect.height * q / th;
+		}
+		if (!g_frost_enabled) zrn_fill_rect(p, area, tint);
+		else if (p->be->backdrop_draw) p->be->backdrop_draw(p, b_blur ? g_bd_blur : nullptr, uv, area, e->backdrop, tint, bd_under(r), BD_VEIL);
+		else zrn_fill_rect(p, area, tint);
+	}
+	if (e->cache_mode != Z_CACHE_BITMAP || !paint_cached(e, p, r)) paint_content(e, p, r);
 	if (b_is_transformed) {
 		memcpy(p->xf, saved_xf, sizeof saved_xf);
 		p->b_has_xf = saved_has_xf;
@@ -457,6 +843,103 @@ void zrn_paint_element(zrn_element_t* const e, zrn_painter_t* const p, zrn_root_
 	p->tx = tx;
 	p->ty = ty;
 	p->alpha = alpha;
+}
+
+static void backdrops_prepare(zrn_root_t* const r, zrn_painter_t* const p) {
+	struct timespec t0, t1;
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	zrn_element_t* todo[BD_MAX];
+	uint32_t sigs[BD_MAX];
+	int n = 0;
+	bool b_changed = false;
+	const float s = p->scale, q = s * 0.25f;
+	g_bd_cover_count = 0;
+	const ZColor under = bd_under(r);
+	for (int i = 0; i < g_backdrop_count; i++) {
+		zrn_element_t* const b = zrn_lookup(g_backdrops[i]);
+		if (!b || b->root != r || !r->visual) continue;
+		if (!b->backdrop_state) b->backdrop_state = (struct zrn_backdrop*)calloc(1, sizeof *b->backdrop_state);
+		struct zrn_backdrop* const st = b->backdrop_state;
+		if (!st) continue;
+		const bool b_was_hit = st->b_hit;
+		st->b_hit = false;
+		if (!bd_shown(b)) continue;
+		const ZRect at = bd_rect(b);
+		if (at.x != st->at.x || at.y != st->at.y || at.width != st->at.width || at.height != st->at.height) {
+			/* it moved or changed size: the lists it overlaps take their room again (zrn_backdrop_insets) */
+			st->at = at;
+			st->b_valid = false;
+			r->b_layout_dirty = true;
+		}
+		if (!p->be->backdrop_begin || at.width <= 0 || at.height <= 0) continue;
+		if (b->backdrop == Z_FROSTED_DIFFUSION_NORMAL && p->be->backdrop_draw) {
+			bool b_opaque = true;
+			for (const zrn_element_t* a = b; a && b_opaque; a = a->parent) b_opaque = a->opacity >= 0.999f && !a->b_transformed;
+			if (b_opaque) {
+				float* const c = g_bd_cover[g_bd_cover_count++];
+				c[0] = at.x * s;
+				c[1] = at.y * s;
+				c[2] = (at.x + at.width) * s;
+				c[3] = (at.y + at.height) * s;
+			}
+		}
+		const float bx = floorf(at.x * s), by = floorf(at.y * s);
+		bd_walk_t walk = { .stop = b, .sig = 2166136261u, .scale = s };
+		const float clip[4] = { bx, by, bx + at.width * s, by + at.height * s };
+		bd_walk(&walk, r->visual, 0, 0, 1.0f, clip);
+		bd_mix(&walk, &r->cache_epoch, sizeof r->cache_epoch);
+		bd_mix(&walk, &under, sizeof under);
+		if (!walk.b_hit) continue;
+		st->b_hit = true;
+		if (!b_was_hit || !st->b_valid || st->sig != walk.sig) b_changed = true;
+		sigs[n] = walk.sig;
+		todo[n++] = b;
+	}
+	if (n && b_changed) {
+		/* one strip for all of them, each in its own band, painted at a quarter of the frame's resolution */
+		int width = 1, height = 0;
+		for (int i = 0; i < n; i++) {
+			struct zrn_backdrop* const st = todo[i]->backdrop_state;
+			st->rx = 0;
+			st->ry = height;
+			st->rw = (int)ceilf(st->at.width * q);
+			st->rh = (int)ceilf(st->at.height * q);
+			width = st->rw > width ? st->rw : width;
+			height += st->rh + BD_GAP;
+		}
+		alignas(max_align_t) uint8_t saved[ZRN_LAYER_SAVE];
+		if (p->be->backdrop_begin(p, &g_bd_strip, width, height, under, saved)) {
+			for (int i = 0; i < n; i++) {
+				struct zrn_backdrop* const st = todo[i]->backdrop_state;
+				p->scale = q;
+				p->tx = -floorf(st->at.x * q) + (float)st->rx;
+				p->ty = -floorf(st->at.y * q) + (float)st->ry;
+				p->alpha = 1.0f;
+				p->clip[0] = st->rx;
+				p->clip[1] = st->ry;
+				p->clip[2] = st->rx + st->rw;
+				p->clip[3] = st->ry + st->rh;
+				p->clip_depth = 0;
+				g_bd_pass = true;
+				g_bd_stop = todo[i];
+				g_bd_stopped = false;
+				zrn_paint_element(r->visual, p, r);
+				g_bd_pass = false;
+				g_bd_stop = nullptr;
+				zrn_render_stats.backdrop_passes++;
+			}
+			p->be->backdrop_end(p, g_bd_strip, &g_bd_blur, saved);
+			for (int i = 0; i < n; i++) {
+				struct zrn_backdrop* const st = todo[i]->backdrop_state;
+				st->sig = sigs[i];
+				st->b_valid = g_bd_blur != nullptr;
+			}
+		} else {
+			for (int i = 0; i < n; i++) todo[i]->backdrop_state->b_hit = false;
+		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	zrn_render_stats.backdrop_ms += (float)((double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6);
 }
 
 static void paint_tooltip(const zrn_root_t* const r, zrn_painter_t* const p) {
@@ -480,6 +963,12 @@ static void paint_tooltip(const zrn_root_t* const r, zrn_painter_t* const p) {
 bool zrn_root_paint(zrn_root_t* const r, zrn_painter_t* const p) {
 	if (r->b_layout_dirty || r->b_first_frame) Zroot_update_layout(r->id);
 	if (!(r->b_paint_dirty || r->b_first_frame)) return false;
+	g_cache_new_this_frame = 0;
+	g_cache_deferred = false;
+	zrn_upload_kb_this_frame = 0;
+	zrn_upload_deferred = false;
+	g_bd_cover_count = 0;
+	if (g_backdrop_count && g_frost_enabled) backdrops_prepare(r, p);
 	zrn_paint_clear(p, r->theme.b_has_background ? r->theme.background : r->theme.colors[ZRN_TC_BACKGROUND]);
 	if (r->visual) zrn_paint_element(r->visual, p, r);
 	for (int i = 0; i < r->popup_count; i++) {
@@ -499,8 +988,12 @@ bool zrn_root_paint(zrn_root_t* const r, zrn_painter_t* const p) {
 		zrn_paint_element(popup->children[0], p, r);
 	}
 	paint_tooltip(r, p);
-	r->b_paint_dirty = false;
+	/* bitmaps left for later: another frame makes the next few */
+	r->b_paint_dirty = g_cache_deferred || zrn_upload_deferred;
 	r->b_first_frame = false;
+	if (!r->b_settle_frame) r->b_settle_armed = true;
+	r->b_settle_frame = false;
+	r->settle_quiet_ms = 0;
 	return true;
 }
 
@@ -596,10 +1089,30 @@ const char* Zroot_get_renderer_name(const Zid root) {
  *  time
  * ============================================================================ */
 
-static void zrn_tick_tree(zrn_element_t* const e, const float dt) {
+uint32_t zrn_tick_epoch = 1;
+
+/* Ticks a subtree; false when nothing in it ticks any more. Such a subtree is marked with the epoch and skipped until the
+ * epoch moves (zrn_want_tick, a tween, a new child): a chat of hundreds of bubbles is not walked sixty times a second. */
+/* Zroot_is_animating: what moved in this tick, leaving out the controls that tick for as long as they are shown (an
+ * indeterminate progress bar or ring, a caret blinking); a program waiting for the animations to end would wait on them
+ * for ever. */
+static bool zrn_tick_moved;
+
+static bool zrn_ticks_forever(const zrn_element_t* const e) {
+	return zrn_is_a(e, Z_CLASS_PROGRESS_BAR) || zrn_is_a(e, Z_CLASS_PROGRESS_RING) || zrn_is_a(e, Z_CLASS_TEXT_BOX) ||
+		zrn_is_a(e, Z_CLASS_PASSWORD_BOX);
+}
+
+static bool zrn_tick_tree(zrn_element_t* const e, const float dt) {
+	if (e->tick_quiet_epoch == zrn_tick_epoch) return false;
 	if (e->tweens) zrn_tweens_tick(e);
 	if (e->b_wants_tick && e->cls->tick) e->cls->tick(e, dt);
-	for (int i = 0; i < e->child_count; i++) zrn_tick_tree(e->children[i], dt);
+	/* a class without a tick that asks for one is not ticking */
+	bool b_busy = e->tweens != nullptr || (e->b_wants_tick && e->cls->tick);
+	if (e->tweens || (e->b_wants_tick && e->cls->tick && !zrn_ticks_forever(e))) zrn_tick_moved = true;
+	for (int i = 0; i < e->child_count; i++) b_busy |= zrn_tick_tree(e->children[i], dt);
+	if (!b_busy) e->tick_quiet_epoch = zrn_tick_epoch;
+	return b_busy;
 }
 
 /* ZRNUI_ANIMATION_SPEED: a float multiplier for every animation (0.5 = half speed,
@@ -621,6 +1134,17 @@ static float zrn_animation_speed(void) {
 	const float speed = zrn_config()->animation_speed;
 	return speed > 0 ? speed : 1.0f;
 }
+/* WP's Holding: 500 ms without moving more than 9.5 px. */
+static constexpr float ZRN_HOLD_MS = 500.0f;
+static constexpr float ZRN_HOLD_SLOP = 9.5f;
+
+static void hold_fire(zrn_root_t* r);
+
+bool Zroot_is_animating(const Zid root) {
+	const zrn_root_t* const r = get_root(root);
+	return r && r->b_animating;
+}
+
 void Zroot_tick(const Zid root, const float delta_ms) {
 	zrn_root_t* const r = get_root(root);
 	if (!r) return;
@@ -633,21 +1157,44 @@ void Zroot_tick(const Zid root, const float delta_ms) {
 			r->theme_t = 1.0f;
 			r->b_theme_transitioning = false;
 			r->theme = r->theme_target;
+			/* the bindings were applied when the fade began, with the theme it came from: the resources of the theme it
+			 * reached go to them now (a bound foreground stayed white on a light page) */
+			zrn_root_resources_changed(r);
 		} else {
 			zrn_theme_lerp(&r->theme, &r->theme_from, &r->theme_target, r->theme_t);
 		}
 		r->b_paint_dirty = true;
+		r->cache_epoch++;
 	}
 	zrn_tilt_tick(r, delta_ms * speed);
+	if (r->b_hold_armed) {
+		r->hold_ms += delta_ms;
+		if (r->hold_ms >= ZRN_HOLD_MS) {
+			hold_fire(r);
+			if (!get_root(root)) return;
+		}
+	}
 	/* a handler of a tick may destroy the root: it is looked up again after each tree */
+	zrn_tick_moved = r->b_theme_transitioning;
 	if (r->visual) zrn_tick_tree(r->visual, delta_ms * speed);
 	if (!get_root(root)) return;
 	if (r->overlay) zrn_tick_tree(r->overlay, delta_ms * speed);
 	if (!get_root(root)) return;
+	r->b_animating = zrn_tick_moved || r->capture != nullptr;
 	if (r->tooltip_target && r->tooltip_target->tooltip) {
 		const float before = r->tooltip_timer;
 		r->tooltip_timer += delta_ms;
 		if (before < 500.0f && r->tooltip_timer >= 500.0f) r->b_paint_dirty = true;
+	}
+	/* the settle frame (root.h): 400 ms after the last change, at rest */
+	if (r->b_paint_dirty || r->b_layout_dirty) {
+		r->settle_quiet_ms = 0;
+	} else if (r->b_settle_armed) {
+		r->settle_quiet_ms += delta_ms;
+		if (r->settle_quiet_ms >= 400.0f) {
+			r->b_settle_armed = false;
+			/* the GPU faults that smeared rows are fixed in the kernel: nothing is repainted at rest any more */
+		}
 	}
 }
 
@@ -748,6 +1295,9 @@ static void update_hover(zrn_root_t* const r, zrn_element_t* const target, const
 	int old_n, new_n, i, j;
 	zrn_input_t in;
 	if (target == r->hover) return;
+	/* the hover is drawn (pointer-over looks): the cached bitmaps around the old and the new target are stale */
+	zrn_cache_stale(r->hover);
+	zrn_cache_stale(target);
 	memset(&in, 0, sizeof in);
 	in.x = x;
 	in.y = y;
@@ -782,6 +1332,8 @@ static zrn_element_t* tooltip_owner(zrn_element_t* e) {
 /* Lets the ancestors that observe the pointer see an event first. */
 static void preview(const zrn_element_t* const target, const zrn_input_type_t type, const float x, const float y) {
 	Zid ids[64];
+	zrn_swipe_preview((zrn_element_t*)target, (int)type, x, y);
+	if (!zrn_lookup(target->id)) return;
 	int n = zrn_chain(target, ids, 64), i;
 	for (i = 0; i < n; i++) {
 		zrn_input_t in;
@@ -795,6 +1347,36 @@ static void preview(const zrn_element_t* const target, const zrn_input_type_t ty
 		in.y = q.y;
 		a->cls->input(a, &in);
 	}
+}
+
+/* ---- Holding ---- */
+
+/* The innermost element at or above `e` that listens for Holding or has a context flyout. */
+static zrn_element_t* hold_owner(zrn_element_t* e) {
+	for (; e; e = e->parent) {
+		if (!zrn_effectively_enabled(e)) return nullptr;
+		if (e->handlers[Z_EVENT_HOLDING - Z_EVENT_CLICK].callback) return e;
+		if (e->context_flyout != Z_INVALID_ID && zrn_lookup(e->context_flyout)) return e;
+	}
+	return nullptr;
+}
+
+/* The press has been held: the press is cancelled (no tilt, no click: whoever has the pointer loses it), then Holding is raised and the
+ * context flyout shown. */
+static void hold_fire(zrn_root_t* const r) {
+	const Zid root = r->id;
+	r->b_hold_armed = false;
+	r->b_hold_fired = true;
+	zrn_tilt_release(r);
+	if (r->capture) zrn_set_capture(r, nullptr);
+	if (!zrn_root_lookup(root)) return;
+	zrn_element_t* e = zrn_lookup(r->hold_target);
+	if (!e) return;
+	const Zid id = e->id;
+	if (!zrn_raise(e, Z_EVENT_HOLDING)) return;
+	e = zrn_lookup(id);
+	if (!e || e->context_flyout == Z_INVALID_ID || !zrn_lookup(e->context_flyout)) return;
+	Zflyout_base_show_at(e->context_flyout, id);
 }
 
 /* The target again after something that can run user code: NULL if it is gone. */
@@ -831,6 +1413,7 @@ bool Zroot_inject_pointer(const Zid root, const ZPointerEvent event, float x, fl
 			r->tooltip_timer = 0;
 		}
 		zrn_tilt_move(r, x, y);
+		if (r->b_hold_armed && hypotf(x - r->hold_x, y - r->hold_y) > ZRN_HOLD_SLOP) r->b_hold_armed = false;
 		target = RELOOK(tid);
 		if (target) preview(target, ZRN_IN_PREVIEW_MOVE, x, y);
 		if (r->capture) target = r->capture;
@@ -840,6 +1423,18 @@ bool Zroot_inject_pointer(const Zid root, const ZPointerEvent event, float x, fl
 		return b_handled;
 	}
 	if (event == Z_POINTER_DOWN) {
+		r->b_hold_armed = false;
+		r->b_hold_fired = false;
+		{
+			const zrn_element_t* const owner = hold_owner(target);
+			if (owner) {
+				r->hold_target = owner->id;
+				r->hold_x = x;
+				r->hold_y = y;
+				r->hold_ms = 0;
+				r->b_hold_armed = true;
+			}
+		}
 		r->tooltip_timer = 0;
 		r->tooltip_target = nullptr;
 		if (!r->capture && r->open_bar && !ZRN_AS(zrn_app_bar_t, r->open_bar)->b_is_sticky && !is_inside(target, r->open_bar) && !in_a_popup(r, target)) {
@@ -854,17 +1449,32 @@ bool Zroot_inject_pointer(const Zid root, const ZPointerEvent event, float x, fl
 		update_hover(r, target, x, y);
 		target = RELOOK(tid);
 		if (tid != Z_INVALID_ID && !target) return true;
-		for (zrn_element_t* f = target; f; f = f->parent) {
+		/* a press in an app bar leaves the focus where it is (WP's application bar never takes it): a send button pressed
+		 * while typing must not take the focus from the text box, put the keyboard away and move from under the finger */
+		bool b_in_bar = false;
+		for (const zrn_element_t* a = target; a && !b_in_bar; a = a->parent) b_in_bar = zrn_is_a(a, Z_CLASS_APP_BAR);
+		const bool b_typing = r->focus && (zrn_is_a(r->focus, Z_CLASS_TEXT_BOX) || zrn_is_a(r->focus, Z_CLASS_PASSWORD_BOX));
+		for (zrn_element_t* f = target; f && !b_in_bar; f = f->parent) {
 			if (f->b_focusable && zrn_effectively_enabled(f)) {
+				/* IsTabStop false: a control beside a text box (an emoji or a mic button) is pressed without taking the
+				 * focus from it, so the keyboard does not go and the control does not move from under the finger */
+				if (!f->b_tab_stop && b_typing && f != r->focus) break;
 				zrn_set_focus(r, f);
 				break;
 			}
 		}
 		target = RELOOK(tid);
 		if (tid != Z_INVALID_ID && !target) return true;
+		const zrn_element_t* const held_before = r->capture;
 		if (target) preview(target, ZRN_IN_PREVIEW_DOWN, x, y);
+		if (!zrn_root_lookup(root)) return true;
 		target = RELOOK(tid);
 		in.type = ZRN_IN_POINTER_DOWN;
+		/* the preview took the press (a list stopped from coasting): it is that one's, nothing under it is pressed */
+		if (r->capture && r->capture != held_before) {
+			r->b_hold_armed = false;
+			return zrn_dispatch(r->capture, &in);
+		}
 		{
 			for (zrn_element_t* f2 = target; f2; f2 = f2->parent) {
 				if (f2->tilt && zrn_effectively_enabled(f2)) {
@@ -877,6 +1487,13 @@ bool Zroot_inject_pointer(const Zid root, const ZPointerEvent event, float x, fl
 		return b_handled;
 	}
 	zrn_tilt_release(r);
+	r->b_hold_armed = false;
+	if (r->b_hold_fired) {
+		/* the lift of a held press does nothing more: the press was cancelled when it was held */
+		r->b_hold_fired = false;
+		if (r->capture) zrn_set_capture(r, nullptr);
+		return true;
+	}
 	if (target) preview(target, ZRN_IN_PREVIEW_UP, x, y);
 	target = r->capture ? r->capture : RELOOK(tid);
 	in.type = ZRN_IN_POINTER_UP;
@@ -900,9 +1517,24 @@ bool Zroot_inject_wheel(const Zid root, const float delta) {
 
 bool Zroot_back(const Zid root) {
 	zrn_root_t* const r = get_root(root);
-	if (r && zrn_root_dismiss_top(r)) return true;
-	if (!r || !r->visual || !zrn_is_a(r->visual, Z_CLASS_FRAME)) return false;
-	return Zframe_go_back(r->visual->id);
+	/* back first puts the keyboard away (WP): the text box loses the focus, the window hides the keyboard, the page stays */
+	if (r && r->input_pane > 0 && r->focus && (zrn_is_a(r->focus, Z_CLASS_TEXT_BOX) || zrn_is_a(r->focus, Z_CLASS_PASSWORD_BOX))) {
+		zrn_set_focus(r, nullptr);
+		return true;
+	}
+	if (r && r->back_callback && r->back_callback(root, r->back_user_data)) return true;
+	/* (the callback may have done anything to the root) */
+	zrn_root_t* const rr = get_root(root);
+	if (rr && zrn_root_dismiss_top(rr)) return true;
+	if (!rr || !rr->visual || !zrn_is_a(rr->visual, Z_CLASS_FRAME)) return false;
+	return Zframe_go_back(rr->visual->id);
+}
+
+void Zroot_on_back(const Zid root, const ZBackCallback callback, void* const user_data) {
+	zrn_root_t* const r = get_root(root);
+	if (!r) return;
+	r->back_callback = callback;
+	r->back_user_data = user_data;
 }
 
 bool Zroot_inject_key(const Zid root, const ZKey key, const int modifiers, const bool pressed) {

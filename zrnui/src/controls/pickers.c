@@ -249,7 +249,7 @@ static void ls_set_expand(zrn_looping_selector_t* const s, const float goal) {
 		s->expand = goal;
 		zrn_changed_paint(e);
 	} else {
-		e->b_wants_tick = true;
+		zrn_want_tick(e);
 	}
 }
 
@@ -286,7 +286,7 @@ static void ls_snap_to(zrn_looping_selector_t* const s, const int target) {
 		s->snap_from = s->pos;
 		s->snap_to = (float)target;
 		s->snap_elapsed = 0;
-		e->b_wants_tick = true;
+		zrn_want_tick(e);
 	} else {
 		ls_finish(s, target);
 	}
@@ -337,7 +337,7 @@ static void ls_release(zrn_looping_selector_t* const s) {
 	if (e->root && zrn_animations_enabled(e->root)) {
 		if (fabsf(s->velocity) >= MIN_SPEED * 4) {
 			s->b_inertia = true;
-			e->b_wants_tick = true;
+			zrn_want_tick(e);
 		} else {
 			ls_snap_to(s, ls_nearest(s, s->pos));
 		}
@@ -369,7 +369,7 @@ static int ls_input(zrn_element_t* const e, zrn_input_t* const in) {
 		s->press_y = s->last_y = in->y;
 		s->press_pos = s->pos;
 		if (e->root) zrn_set_capture(e->root, e);
-		e->b_wants_tick = true;
+		zrn_want_tick(e);
 		ls_set_expand(s, 1);
 		return 1;
 	case ZRN_IN_POINTER_MOVE:

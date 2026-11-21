@@ -4,6 +4,40 @@
  */
 
 #include "test.h"
+#include <string.h>
+#ifdef ZRNUI_TEST_HAVE_GLES
+#include <GLES2/gl2.h>
+#endif
+
+/* ctest's SKIP_RETURN_CODE (tests/CMakeLists.txt): the test did not run here, it did not fail */
+static constexpr int SKIPPED = 77;
+
+/* The renderer drew through a GL context that it leaves current (an off-screen one of its own). Without GLES headers
+ * nothing can be asked and the answers are "a GPU" and "multisampled". */
+static const char* gl_string(const unsigned name) {
+#ifdef ZRNUI_TEST_HAVE_GLES
+	const char* const s = (const char*)glGetString((GLenum)name);
+	return s ? s : "";
+#else
+	(void)name;
+	return "";
+#endif
+}
+static bool gl_is_software(void) {
+#ifdef ZRNUI_TEST_HAVE_GLES
+	const char* const r = gl_string(GL_RENDERER);
+	return strstr(r, "llvmpipe") || strstr(r, "softpipe") || strstr(r, "swrast");
+#else
+	return false;
+#endif
+}
+static bool gl_can_multisample_offscreen(void) {
+#ifdef ZRNUI_TEST_HAVE_GLES
+	return strstr(gl_string(GL_EXTENSIONS), "GL_EXT_multisampled_render_to_texture") != nullptr;
+#else
+	return true;
+#endif
+}
 
 #include <stdlib.h>
 
@@ -72,6 +106,12 @@ static void test_msaa_edges(void) {
 		Zroot_destroy(root);
 		return;
 	}
+	/* the off-screen framebuffer is multisampled only through GL_EXT_multisampled_render_to_texture (gles.c) */
+	if (!gl_can_multisample_offscreen()) {
+		printf("  the driver has no GL_EXT_multisampled_render_to_texture: the MSAA check is skipped\n");
+		Zroot_destroy(root);
+		return;
+	}
 	/* the inside of the triangle and the background, read from the picture; the edge is what lies between the two */
 	const uint8_t* const inside = frame.pixels + (size_t)10 * (size_t)frame.stride + (size_t)10 * 4;
 	const uint8_t* const outside = frame.pixels + (size_t)95 * (size_t)frame.stride + (size_t)95 * 4;
@@ -119,7 +159,16 @@ int main(void) {
 		Zroot_destroy(soft);
 		Zroot_destroy(gpu);
 		Zshutdown();
-		return 0;
+		return SKIPPED;
+	}
+	/* Mesa's CPU rasterizer (what EGL falls back to when it cannot open the GPU, "failed to create dri2 screen" on a
+	 * headless or remote session) is not the GPU this test is about */
+	if (gl_is_software()) {
+		printf("test_gpu: OpenGL ES runs on the CPU here (%s), not on a GPU: skipped\n", gl_string(0x1F01 /* GL_RENDERER */));
+		Zroot_destroy(soft);
+		Zroot_destroy(gpu);
+		Zshutdown();
+		return SKIPPED;
 	}
 	CHECK_STR(Zroot_get_renderer_name(gpu), "gles2");
 	RUN(test_msaa_edges);

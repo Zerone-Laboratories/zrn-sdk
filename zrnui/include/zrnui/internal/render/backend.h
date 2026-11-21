@@ -36,7 +36,34 @@ typedef struct zrn_backend {
 	int (*clipped_out)(const zrn_painter_t* p, ZRect r);
 	/** What follows is drawn under this affine transform (column-major 4x4, device pixels), NULL for none. Backends that cannot, draw it untransformed. */
 	void (*set_transform)(zrn_painter_t* p, const float* m);
+	/**
+	 * Layers (CacheMode): what follows layer_begin is painted into `*layer` (made or remade at width x height device pixels), from
+	 * a clear transparent start, with the painter at its origin, unclipped and opaque; layer_end puts the painter and the target back as
+	 * `saved` (opaque storage of ZRN_LAYER_SAVE bytes) holds them. draw_layer draws a layer with its top left at the painter's origin,
+	 * under its transform, alpha and clip. NULL in a renderer that has none (software): the subtree is painted directly then.
+	 * layer_begin returns false when it cannot make the layer, and then nothing changed.
+	 */
+	bool (*layer_begin)(zrn_painter_t* p, zrn_image_t** layer, int width, int height, void* saved);
+	void (*layer_end)(zrn_painter_t* p, const void* saved);
+	void (*draw_layer)(zrn_painter_t* p, const zrn_image_t* layer);
+	/** Whether draw_layer can draw this layer now (a layer that shares a texture with the target cannot); NULL is always. */
+	bool (*layer_drawable)(const zrn_painter_t* p, const zrn_image_t* layer);
+	/**
+	 * zrn-frosted-diffusion (host.c). backdrop_begin: what follows is painted into `*strip` (made or remade at width x height
+	 * device pixels, cleared to `under`), with the painter at the strip's origin, as the frame would be (bitmap caches drawn
+	 * from their textures: it is not a layer); false when it cannot, and then nothing changed. backdrop_end: the strip, cut
+	 * to a quarter each way and blurred in one pass, into `*blur`; the painter and the target are put back from `saved`
+	 * (ZRN_LAYER_SAVE bytes). backdrop_draw: the effect over `r` (local), evenly or fading as `mode` (a ZFrostedDiffusion) says: `blur` (its part `uv`: u, v of the element's top left, then its width and height in texture units, v up) with grain under `tint` (`veil`
+	 * of it), or where `blur` is NULL (nothing under it) `under` under the same tint. NULL in a renderer without them: the
+	 * element is filled with the tint.
+	 */
+	bool (*backdrop_begin)(zrn_painter_t* p, zrn_image_t** strip, int width, int height, ZColor under, void* saved);
+	void (*backdrop_end)(zrn_painter_t* p, zrn_image_t* strip, zrn_image_t** blur, const void* saved);
+	void (*backdrop_draw)(zrn_painter_t* p, const zrn_image_t* blur, const float uv[4], ZRect r, int mode, ZColor tint, ZColor under, float veil);
 } zrn_backend_t;
+
+/** The room layer_begin needs to save the state of a painter and its target. */
+#define ZRN_LAYER_SAVE 2048
 
 extern const zrn_backend_t zrn_backend_software;
 

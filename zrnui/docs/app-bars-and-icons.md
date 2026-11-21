@@ -18,7 +18,7 @@ An `IconElement` is not a control. An icon draws in the foreground of the contro
 
 ## AppBar
 
-**What it is.** The Windows Phone 8.1 `AppBar`. Closed it is 57.5 px tall, or 35 px as Minimal; the page gives its content what is left. Three dots at the right edge (all of a Minimal bar) open it: a tap, or `IsOpen`. Open, it grows over the page in 167 ms and the buttons show their labels.
+**What it is.** The Windows Phone 8.1 `AppBar`. Closed it is 50.5 px tall (1.5 + 47.5 + 1.5, measured on a Windows Phone 8.1 phone), or 35 px as Minimal; the page gives its content what is left. Three dots in the top right corner, their tops level with the tops of the circles (all of a Minimal bar), open it: a tap, or `IsOpen`. Open, it grows over the page in 167 ms and the buttons show their labels.
 
 **Create**
 
@@ -55,7 +55,7 @@ Zid make_minimal_bar(void) {
 - A press outside an open bar that is not sticky closes it and is not given to what is under it; so does Back.
 - A tapped secondary command (a toggle button too) closes the bar.
 - A root has one open bar at a time: opening one bar closes the other, so the light dismiss and Back have one bar to close.
-- The phone template of CommandBar is a stub (the shell draws the real bar): the dots, the Minimal size, the secondary rows and the separator are the library's own. The Compact bar is 57.5 px, not the 68 of other sources.
+- The phone template of CommandBar is a stub (the shell draws the real bar): the dots, the Minimal size, the secondary rows and the separator are the library's own. The Compact bar is 50.5 px: the XAML 57.5 is in view pixels of a wider phone and drew the bar too tall.
 
 ## CommandBar
 
@@ -104,7 +104,7 @@ Zid make_bar(void) {
 
 ## AppBarButton
 
-**What it is.** The 8.1 `AppBarButton`: a 38.5 px circle with a 2.5 px outline, the icon in it and its label under it (9.5 px type; the item is 80 px wide and the label 70.5 px inside it). Pressed, it fills with the foreground and the icon takes the background color.
+**What it is.** The 8.1 `AppBarButton`: a 33 px circle with a 2 px outline, 8 px under the top of the bar, the icon in it (a Segoe UI Symbol glyph centred on its ink when that font is installed, a drawn shape otherwise) and its label under it (9.5 px type; the item is 59 px wide and the label 70.5 px inside it). A CommandBar centres its buttons, 59 px apart. Pressed, it fills with the foreground and the icon takes the background color.
 
 **Create**
 
@@ -337,5 +337,70 @@ Zid make_logo(void) {
 **Notes**
 
 - It is not tinted with the foreground.
+
+## zrn-frosted-diffusion
+
+What lies behind an element shows through it blurred and grainy, under the element's tint (75 % over the blur); the element's
+own text, icons and button circles are painted on top unchanged, so they keep the contrast of a solid bar. A list scrolling
+under an app bar, a header or a composer goes soft behind it instead of being cut at its edge.
+
+```c
+void Zelement_set_frosted_diffusion(Zid element, ZFrostedDiffusion mode, ZThemeResource tint);
+ZFrostedDiffusion Zelement_get_frosted_diffusion(Zid element);
+void Zscroll_viewer_get_content_insets(Zid scroll_viewer, float* top, float* bottom);
+float Zapp_bar_get_closed_height(Zid app_bar);
+```
+
+| Mode | Look |
+|---|---|
+| `Z_FROSTED_DIFFUSION_NORMAL` | frosted glass, even over the whole element (bars, headers, composers) |
+| `Z_FROSTED_DIFFUSION_ASCENDING` | full at the top edge, fading to nothing at the bottom (the shell's status bar) |
+| `Z_FROSTED_DIFFUSION_DESCENDING` | full at the bottom edge, fading to nothing at the top (the shell's navigation bar) |
+| `Z_FROSTED_DIFFUSION_NONE` | off |
+
+`tint` is a theme key (`Z_RES_PHONE_CHROME_COLOR` for an app bar, `Z_RES_PHONE_BACKGROUND_BRUSH` for a header); it follows
+the theme.
+
+```c
+Zid bar = Zcommand_bar_create();
+Zelement_set_frosted_diffusion(bar, Z_FROSTED_DIFFUSION_NORMAL, Z_RES_PHONE_CHROME_COLOR);
+Zpage_set_bottom_app_bar(page, bar);   /* the page's list now runs behind the bar */
+```
+
+**Layout**
+
+- A CommandBar or AppBar with the effect paints no background or border of its own, and its Page lays the content out under
+  it (the bar takes no room).
+- A vertical ScrollViewer overlapped at its top or bottom end (by which half of it the element is in) by elements with the effect (also one laid over the end of another,
+  a composer above an app bar) gets that much room before or after its content, so the first and last items can still be
+  scrolled clear (`Zscroll_viewer_get_content_insets`). The room follows the elements when they move or change size.
+- Content that must not go under a bar keeps the room itself (`Zapp_bar_get_closed_height`).
+
+**Cost (GPU renderer)**
+
+- Before a frame, the root's tree is painted again into a strip the size of the element, only up to the element in paint
+  order and clipped to the strip, with bitmap-cached rows drawn from their textures (nothing is cached anew); then one pass
+  cuts it to a quarter each way and blurs it (a 9-tap Gaussian both ways in 25 filtered taps). The frame itself stays one
+  render pass: nothing is read back from it.
+- That pass runs only when what is under the element changed: a walk of the tree compares where the leaves and cached rows
+  that reach into the strip are, their opacity and how often they changed. While nothing changes, the kept blur is drawn.
+- With only the page background under the element there is no pass at all: the background under the tint is drawn.
+- The frame log (`ZRNUI_FRAME_LOG`) shows `bd=` (passes in the frame) and `bdms=` (their CPU time).
+
+**System-wide switch**
+
+```c
+void Zset_frosted_diffusion_enabled(bool enabled);
+bool Zfrosted_diffusion_enabled(void);
+```
+
+ztOS Settings > theme > "frosted diffusion" writes `frost = 1|0` into `~/.config/ztmetro/config`. Every zrnapp window reads
+it with the theme and follows it live (inotify). Off, each element with the effect is painted as its tint alone, opaque,
+like a plain bar; no strip is painted and nothing is blurred, and the layout stays the same. On by default.
+
+**Notes**
+
+- Popups are not under anything; at most 16 elements have the effect at a time.
+- The software renderer fills the element with the tint.
 
 Back to the [documentation index](index.md)

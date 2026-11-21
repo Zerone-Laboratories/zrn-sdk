@@ -4,6 +4,8 @@
  * of the rendered page.
  */
 
+#define _POSIX_C_SOURCE 200809L /* nanosleep */
+#include <time.h>
 #include "test.h"
 
 static int g_in_view, g_clicks;
@@ -341,13 +343,26 @@ static void test_scroll_and_sections_in_view(void) {
 	Zroot_destroy(root);
 }
 
+/* a flick as a finger makes it: the moves 16 ms apart in real time, because the scroll viewer takes the speed of a fling
+ * from the clock of the moves (sv_release_velocity), and moves sent all at once have no speed */
+static void flick(Zid root, ZPoint p, float dx, int steps) {
+	const struct timespec frame = { 0, 16 * 1000 * 1000 };
+	Zroot_inject_pointer(root, Z_POINTER_MOVE, p.x, p.y);
+	Zroot_inject_pointer(root, Z_POINTER_DOWN, p.x, p.y);
+	for (int i = 1; i <= steps; i++) {
+		nanosleep(&frame, nullptr);
+		Zroot_inject_pointer(root, Z_POINTER_MOVE, p.x + dx * (float)i / (float)steps, p.y);
+	}
+	Zroot_inject_pointer(root, Z_POINTER_UP, p.x + dx, p.y);
+}
+
 static void test_inertia_reports_sections(void) {
 	Zid root, sv;
 	int before;
 	setup(&root, Z_ANIMATIONS_ON);
 	sv = Zhub_get_scroll_viewer(g_hub);
 	/* a fast flick: the finger goes 120 px in 6 moves, and the sections go on by themselves, the event comes from the ticks */
-	drag(root, (ZPoint){ 400, 500 }, -120, 0, 6);
+	flick(root, (ZPoint){ 400, 500 }, -120, 6);
 	before = g_in_view;
 	CHECK(Zscroll_viewer_get_horizontal_offset(sv) > 100);
 	run(root, 1500);

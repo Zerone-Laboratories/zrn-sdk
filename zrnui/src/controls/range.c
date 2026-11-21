@@ -497,7 +497,8 @@ static void progress_tick(zrn_element_t* const e, const float dt) {
 	if (!b->b_indeterminate) return;
 	b->time_ms += dt;
 	if (b->time_ms >= PB_CYCLE_MS) b->time_ms = fmodf(b->time_ms, PB_CYCLE_MS);
-	zrn_changed_paint(e);
+	/* a bar that is collapsed (or under a collapsed parent) is not seen: no frame for it, every 16 ms, forever */
+	if (zrn_effectively_visible(e)) zrn_changed_paint(e);
 }
 
 static void progress_init(zrn_element_t* const e) {
@@ -525,7 +526,8 @@ void Zprogress_bar_set_is_indeterminate(const Zid progress_bar, const bool is_in
 	if (!e) return;
 	PROGRESS(e)->b_indeterminate = is_indeterminate != 0;
 	PROGRESS(e)->time_ms = 0;
-	e->b_wants_tick = is_indeterminate != 0;
+	if (is_indeterminate) zrn_want_tick(e);
+	else e->b_wants_tick = false;
 	zrn_changed_paint(e);
 }
 
@@ -605,7 +607,7 @@ static void progress_ring_tick(zrn_element_t* const e, const float dt) {
 	if (!r->b_is_active) return;
 	r->time_ms += dt;
 	if (r->time_ms >= PR_CYCLE_MS) r->time_ms = fmodf(r->time_ms, PR_CYCLE_MS);
-	zrn_changed_paint(e);
+	if (zrn_effectively_visible(e)) zrn_changed_paint(e);
 }
 
 static void progress_ring_init(zrn_element_t* const e) {
@@ -638,7 +640,8 @@ void Zprogress_ring_set_is_active(Zid progress_ring, bool is_active) {
 	if (RING(e)->b_is_active == is_active) return;
 	RING(e)->b_is_active = is_active;
 	RING(e)->time_ms = 0;
-	e->b_wants_tick = is_active;
+	if (is_active) zrn_want_tick(e);
+	else e->b_wants_tick = false;
 	zrn_changed_paint(e);
 }
 
